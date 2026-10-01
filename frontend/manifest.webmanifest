@@ -1,0 +1,11 @@
+{
+  "name": "E.V. Command Center",
+  "short_name": "E.V.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050a14",
+  "theme_color": "#050a14",
+  "icons": [
+    { "src": "/static/assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
