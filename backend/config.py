@@ -1,8 +1,9 @@
 """Paths, environment loading, and secret handling.
 
-Secrets (API keys, tokens, passwords) live only in the local `.env` file and in
-the backend process environment. They are never sent to the browser; the API
-only reports whether a secret is configured plus its last four characters.
+Secrets (API keys, tokens, passwords) are read ONLY from E.V.'s own `.env` file —
+never from the wider system environment — so a key set for some other program on
+your computer is never used without you adding it here. Secrets are never sent to
+the browser; the API only reports whether one is configured plus its last 4 chars.
 """
 from __future__ import annotations
 
@@ -10,13 +11,18 @@ import os
 import re
 from pathlib import Path
 
-from dotenv import load_dotenv, set_key, unset_key
+from dotenv import dotenv_values, set_key, unset_key
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIR = BASE_DIR / "frontend"
 ENV_FILE = Path(os.environ.get("EV_ENV_FILE", BASE_DIR / ".env"))
 
-load_dotenv(ENV_FILE, override=False)
+# Only E.V.'s own server settings (EV_*) go into the process environment; API keys
+# stay in _SECRETS below so they aren't inherited by any child process.
+if ENV_FILE.exists():
+    for _k, _v in dotenv_values(ENV_FILE).items():
+        if _k.startswith("EV_") and _v is not None:
+            os.environ.setdefault(_k, _v)
 
 DATA_DIR = Path(os.environ.get("EV_DATA_DIR", BASE_DIR / "data")).resolve()
 UPLOAD_DIR = DATA_DIR / "uploads"
@@ -47,8 +53,13 @@ def ensure_dirs() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
+_SECRETS: dict[str, str] = {
+    k: v for k, v in dotenv_values(ENV_FILE).items() if k in SECRET_NAMES and v
+} if ENV_FILE.exists() else {}
+
+
 def get_secret(name: str) -> str | None:
-    value = os.environ.get(name, "").strip()
+    value = (_SECRETS.get(name) or "").strip()
     return value or None
 
 
@@ -67,7 +78,7 @@ def set_secret(name: str, value: str | None) -> None:
     if name not in SECRET_NAMES:
         raise ValueError(f"Unknown secret name: {name}")
     if value is None or value.strip() == "":
-        os.environ.pop(name, None)
+        _SECRETS.pop(name, None)
         if ENV_FILE.exists():
             unset_key(str(ENV_FILE), name)
         return
@@ -76,4 +87,4 @@ def set_secret(name: str, value: str | None) -> None:
         raise ValueError("Secret contains unsupported characters (spaces or non-ASCII).")
     ENV_FILE.touch(exist_ok=True)
     set_key(str(ENV_FILE), name, value, quote_mode="never")
-    os.environ[name] = value
+    _SECRETS[name] = value

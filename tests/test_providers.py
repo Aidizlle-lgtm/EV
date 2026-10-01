@@ -18,7 +18,7 @@ def sse(*chunks):
 
 
 def make_groq(monkeypatch, handler):
-    monkeypatch.setenv("GROQ_API_KEY", "test-key-123456")
+    monkeypatch.setitem(config._SECRETS, "GROQ_API_KEY", "test-key-123456")
     p = OpenAICompatProvider("groq", "Groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY")
     monkeypatch.setattr(p, "_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     return p
@@ -85,7 +85,7 @@ def test_openai_compat_auth_error_is_readable(monkeypatch):
 
 
 def test_openai_compat_missing_key_says_setup_required(monkeypatch):
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delitem(config._SECRETS, "GROQ_API_KEY", raising=False)
     p = OpenAICompatProvider("groq", "Groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY")
     with pytest.raises(ProviderError) as e:
         asyncio.run(drain(p.stream_turn(model="m", system="s", messages=[], tools=[])))
@@ -111,7 +111,7 @@ def anthropic_sse(events):
 
 
 def test_anthropic_request_shape_and_tool_parsing(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    monkeypatch.setitem(config._SECRETS, "ANTHROPIC_API_KEY", "sk-test-not-real")
     captured = {}
 
     def handler(req: httpx2.Request):
@@ -158,7 +158,7 @@ def test_anthropic_request_shape_and_tool_parsing(monkeypatch):
 
 
 def test_anthropic_refusal_becomes_readable_error(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    monkeypatch.setitem(config._SECRETS, "ANTHROPIC_API_KEY", "sk-test-not-real")
 
     def handler(req):
         events = [
@@ -180,7 +180,7 @@ def test_anthropic_refusal_becomes_readable_error(monkeypatch):
 
 def test_anthropic_401_maps_to_auth(monkeypatch):
     p = AnthropicProvider()
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    monkeypatch.setitem(config._SECRETS, "ANTHROPIC_API_KEY", "sk-test-not-real")
     handler = lambda req: httpx2.Response(401, json={"type": "error", "error": {"type": "authentication_error", "message": "invalid x-api-key"}})  # noqa: E731
     monkeypatch.setattr(p, "_client", lambda: anthropic.AsyncAnthropic(
         api_key="x", max_retries=0, http_client=anthropic.DefaultAsyncHttpxClient(transport=httpx2.MockTransport(handler))))

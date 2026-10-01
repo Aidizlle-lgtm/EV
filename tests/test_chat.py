@@ -130,3 +130,24 @@ def test_headless_run_never_requests_approval(fake_provider):
     out = asyncio.run(chat.run_headless("Check my tasks"))
     assert out == "Report: nothing to do."
     assert db.scalar("SELECT COUNT(*) FROM tasks") == 0
+
+
+def test_approval_from_another_thread_wakes_promptly(fake_provider):
+    """The approve endpoint may run off the event loop; the waiting chat must wake at once."""
+    import threading
+    import time
+
+    fake_provider([("", [call("create_task", {"title": "Threaded"})]), ("Added.", [])])
+    conv = chat.create_conversation()
+    timing = {}
+
+    async def approve_from_thread(ev):
+        if ev["type"] == "approval_required":
+            timing["asked"] = time.monotonic()
+            threading.Thread(target=approvals.decide, args=(ev["approval"]["id"], True)).start()
+        if ev["type"] == "tool_result":
+            timing["ran"] = time.monotonic()
+
+    asyncio.run(collect(conv["id"], "add it", approve_from_thread))
+    assert db.scalar("SELECT COUNT(*) FROM tasks") == 1
+    assert timing["ran"] - timing["asked"] < 3, "approval took a polling slice to be noticed"

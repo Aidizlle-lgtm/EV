@@ -93,8 +93,9 @@ async def send_message(cid: int, body: SendMessage):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+# async on purpose: these touch asyncio objects, so they must run on the event loop thread.
 @router.post("/runs/{run_id}/cancel")
-def cancel_run(run_id: str):
+async def cancel_run(run_id: str):
     return {"cancelled": chat.cancel(run_id)}
 
 
@@ -104,7 +105,7 @@ def pending_approvals():
 
 
 @router.post("/approvals/{aid}")
-def decide(aid: str, body: Decision):
+async def decide(aid: str, body: Decision):
     try:
         return approvals.decide(aid, body.decision == "approve")
     except LookupError as e:

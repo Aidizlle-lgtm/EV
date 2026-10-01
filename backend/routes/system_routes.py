@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from datetime import timezone
 from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -43,7 +44,7 @@ def health():
 def provider_status(pid: str) -> dict[str, Any]:
     p = providers.get(pid)
     configured = p.configured()
-    setup = f"Add {p.needs_key} in Settings → Integrations." if p.needs_key else "Install and start Ollama, then test."
+    setup = f"Paste your {p.needs_key} in AI Core (or Settings), then Test." if p.needs_key else "Install and start Ollama, then Test."
     st = status.state(f"llm:{pid}", configured, setup)
     model = settings.model_for(pid)
     if st["status"] in ("configured", "connected") and not model:
@@ -288,7 +289,8 @@ def dashboard():
         sys_status = "SETUP REQUIRED" if not active or active["status"] == "setup_required" else "DEGRADED"
     else:
         sys_status = "OPTIMAL"
-    today = data.local_now().date().isoformat()
+    # start of the local day, expressed in UTC to match stored timestamps
+    today = data.local_now().replace(hour=0, minute=0, second=0).astimezone(timezone.utc).isoformat()
     ints = integrations()
     return {
         "time": data.local_now().isoformat(),
@@ -312,8 +314,8 @@ def dashboard():
         },
         "memory_insights": {
             "memories": db.scalar("SELECT COUNT(*) FROM memories"),
-            "turns_today": db.scalar("SELECT COUNT(*) FROM messages WHERE role = 'user' AND substr(created_at,1,10) >= ?", (today,)),
-            "tool_calls_today": db.scalar("SELECT COUNT(*) FROM audit_log WHERE actor IN ('assistant','job') AND status = 'ok' AND substr(ts,1,10) >= ?", (today,)),
+            "turns_today": db.scalar("SELECT COUNT(*) FROM messages WHERE role = 'user' AND created_at >= ?", (today,)),
+            "tool_calls_today": db.scalar("SELECT COUNT(*) FROM audit_log WHERE actor IN ('assistant','job') AND status = 'ok' AND ts >= ?", (today,)),
             "categories": db.rows("SELECT category, COUNT(*) AS n FROM memories GROUP BY category ORDER BY n DESC LIMIT 8"),
         },
         "timeline": data.today_timeline(),
@@ -323,7 +325,8 @@ def dashboard():
         "providers": provs,
         "agents": get_agents(),
         "weather_configured": weather.configured(),
-        "setup": [i for i in ints if i["status"] == "setup_required"][:6],
+        "setup": [i for i in ints if i["status"] == "setup_required"
+                  and (not i["id"].startswith("llm:") or i.get("active"))][:3],
     }
 
 

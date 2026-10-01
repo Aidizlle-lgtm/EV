@@ -10,9 +10,7 @@ from pathlib import Path
 _TMP = Path(tempfile.mkdtemp(prefix="ev-tests-"))
 os.environ["EV_DATA_DIR"] = str(_TMP / "data")
 os.environ["EV_ENV_FILE"] = str(_TMP / "test.env")
-for _name in ("GROQ_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY",
-              "ELEVENLABS_API_KEY", "GITHUB_TOKEN", "SMTP_PASSWORD"):
-    os.environ.pop(_name, None)
+os.environ["GITHUB_TOKEN"] = "ghp_from_the_shell_must_be_ignored"  # E.V. must only read its own .env
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

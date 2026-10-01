@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
+import webbrowser
 
 if sys.version_info < (3, 10):
     sys.exit("E.V. needs Python 3.10 or newer. Download it from https://www.python.org/downloads/")
@@ -30,6 +32,8 @@ def main() -> None:
     else:
         print("  Phone access is off. Set EV_HOST=0.0.0.0 in .env to enable it.")
     print("  Press Ctrl+C to stop.\n")
+    if "--open" in sys.argv:
+        threading.Timer(2.5, webbrowser.open, [f"{scheme}://localhost:{config.PORT}"]).start()
     uvicorn.run("backend.main:app", host=config.HOST, port=config.PORT, log_level="info",
                 ssl_certfile=config.SSL_CERTFILE, ssl_keyfile=config.SSL_KEYFILE, proxy_headers=False)
 

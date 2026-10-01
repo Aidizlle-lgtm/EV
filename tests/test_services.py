@@ -115,3 +115,10 @@ def test_no_secrets_committed():
             continue
         text = p.read_text(encoding="utf-8", errors="ignore")
         assert not pattern.search(text), f"possible API key in {name}"
+
+
+def test_shell_environment_keys_are_ignored():
+    from backend import config
+    from backend.integrations import github
+    assert config.get_secret("GITHUB_TOKEN") is None
+    assert github.configured() is False

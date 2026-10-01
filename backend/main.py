@@ -28,8 +28,8 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "Permissions-Policy": "microphone=(self), camera=(), geolocation=()",
     "Content-Security-Policy": (
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob:; "
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
         "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     ),
 }

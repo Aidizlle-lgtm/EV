@@ -53,7 +53,15 @@ def decide(aid: str, approve: bool) -> dict[str, Any]:
     _set(aid, status)
     registry.audit(actor="user", tool_name=rec["tool"], level=rec["level"], args=db.loads(rec["args"]),
                    status=f"user_{status}", detail=rec["summary"], conversation_id=rec["conversation_id"])
-    waiter.set_result(status)
+    loop = waiter.get_loop()
+    try:
+        same_thread = asyncio.get_running_loop() is loop
+    except RuntimeError:
+        same_thread = False
+    if same_thread:
+        waiter.set_result(status)
+    else:  # called from a worker thread: hand the result to the loop safely
+        loop.call_soon_threadsafe(lambda: waiter.done() or waiter.set_result(status))
     return public(get(aid))  # type: ignore[arg-type]
 
 
