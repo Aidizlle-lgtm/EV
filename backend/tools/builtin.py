@@ -7,7 +7,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from .. import db
-from ..integrations import email_smtp, github, system_monitor, weather
+from ..integrations import email_smtp, firetv, github, system_monitor, weather
 from ..services import data, documents, files, jobs, settings
 from .registry import Level, ToolContext, ToolError, tool
 
@@ -259,6 +259,54 @@ async def get_weather(a: NoArgs, ctx: ToolContext):
       description="Open GitHub pull requests that are waiting for the user's review.")
 async def github_review_requests(a: NoArgs, ctx: ToolContext):
     return {"pull_requests": await github.review_requests()}
+
+
+# ---------------------------------------------------------------- Fire TV (home network, ADB)
+def _tv(fn):
+    try:
+        return fn()
+    except firetv.FireTVError as e:
+        raise ToolError("error", str(e)) from e
+
+
+TVButton = Literal["home", "back", "select", "up", "down", "left", "right", "menu", "play_pause", "play", "pause",
+                   "next", "previous", "fast_forward", "rewind", "volume_up", "volume_down", "mute", "sleep", "wake"]
+
+
+class TVRemoteArgs(BaseModel):
+    button: TVButton = Field(..., description="Remote button to press")
+    times: int = Field(1, ge=1, le=10, description="How many times to press it (e.g. volume steps)")
+
+
+@tool("tv_remote", level=Level.WRITE, args=TVRemoteArgs, category="home", timeout=45, requires=firetv.setup_issue,
+      description="Press a button on the user's Fire TV remote (navigation, play/pause, volume, sleep/wake).",
+      summarize=lambda a: f"Fire TV: press {a.button.replace('_', ' ')}" + (f" ×{a.times}" if a.times > 1 else ""))
+def tv_remote(a: TVRemoteArgs, ctx: ToolContext):
+    return _tv(lambda: firetv.press(a.button, a.times))
+
+
+class TVOpenArgs(BaseModel):
+    app: str = Field(..., min_length=2, max_length=120, description="App name like 'Netflix', or an Android package name")
+
+
+@tool("tv_open_app", level=Level.WRITE, args=TVOpenArgs, category="home", timeout=30, requires=firetv.setup_issue,
+      description="Open an app that is installed on the user's Fire TV.",
+      summarize=lambda a: f"Fire TV: open {a.app}")
+def tv_open_app(a: TVOpenArgs, ctx: ToolContext):
+    return _tv(lambda: firetv.open_app(a.app))
+
+
+@tool("tv_list_apps", level=Level.READ, args=NoArgs, category="home", timeout=30, requires=firetv.setup_issue,
+      description="List the apps the user installed on their Fire TV.")
+def tv_list_apps(a: NoArgs, ctx: ToolContext):
+    return {"apps": _tv(lambda: firetv.installed_packages(third_party_only=True)),
+            "note": "Built-in apps (like YouTube or Prime Video on some models) may not be listed but can still be opened."}
+
+
+@tool("tv_status", level=Level.READ, args=NoArgs, category="home", timeout=30, requires=firetv.setup_issue,
+      description="Check whether the Fire TV is reachable, awake, and which app is in front.")
+def tv_status(a: NoArgs, ctx: ToolContext):
+    return _tv(firetv.tv_status)
 
 
 # ---------------------------------------------------------------- Communication

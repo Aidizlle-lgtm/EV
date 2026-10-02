@@ -193,6 +193,7 @@ export async function send(raw, { voiceReply = false } = {}) {
         break;
       case "tool_start": {
         thinking.remove();
+        render(); // flush text still waiting for an animation frame before starting a new bubble
         if (S.bubbleText) S.lastText = S.bubbleText;
         S.bubble = null; S.bubbleText = "";
         const chip = toolChip(ev.name, "running");

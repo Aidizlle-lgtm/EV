@@ -26,10 +26,12 @@ E.V. is a personal AI assistant that runs on your Windows laptop and opens in yo
 | Weather (Open-Meteo, free) | ⚙️ Setup required | Your city |
 | GitHub "PRs awaiting your review" | ⚙️ Setup required | `GITHUB_TOKEN` |
 | Sending email (each message approved by you) | ⚙️ Setup required | SMTP settings + `SMTP_PASSWORD` |
+| **Fire TV remote**: buttons, play/pause, volume, sleep/wake, open apps, "what's on" | ⚙️ Setup required | Fire TV IP + ADB debugging + Android platform-tools ([see below](#fire-tv-and-alexa)) |
+| E.V.'s voice through your Echo | ✅ Works | Pair the Echo as a Bluetooth speaker (no code involved) |
 | Reading files and creating files on your laptop | ⚙️ Setup required | Folders you authorize |
 | Google Calendar sync, Gmail inbox, web search, browser automation, calls/SMS, purchases and bookings | 🚧 Planned, not built | The app labels these "Not built yet" |
 
-**Note on testing:** All 46 automated tests pass. I also ran a full browser walkthrough: first-run setup, streamed chat, a tool call, the approval card, approving it, and the task being created, at both desktop and phone sizes. **However, my build environment's network blocks Groq, ElevenLabs, and Open-Meteo**, so I tested those integrations against simulated (mocked) APIs, not the real services. The first real call happens on your laptop. The **Test** buttons in the app check each integration and report the result.
+**Note on testing:** All 56 automated tests pass. I also ran full browser walkthroughs: first-run setup, streamed chat, a tool call, the approval card, approving it, and the task being created, at both desktop and phone sizes; plus "Pause the TV" through to the ADB command, using a stand-in for `adb` because no Fire TV is reachable from my build environment. **However, my build environment's network blocks Groq, ElevenLabs, and Open-Meteo**, so I tested those integrations against simulated (mocked) APIs, not the real services. The first real call happens on your laptop. The **Test** buttons in the app check each integration and report the result.
 
 ---
 
@@ -85,6 +87,31 @@ How the backend enforces this:
 
 ---
 
+## Fire TV and Alexa
+
+Everything here stays on your home network. Nothing goes through the internet, and nothing is exposed to it.
+
+### Hear E.V. through your Echo (2 minutes)
+1. Say **"Alexa, pair Bluetooth."**
+2. On the laptop, open **Settings → Bluetooth & devices → Add device → Bluetooth** and pick your Echo.
+3. In E.V., turn on **Settings → Voice → "Also speak replies to typed messages"** if you want every answer read aloud.
+
+E.V. now speaks from the Echo in your ElevenLabs voice. You still talk to E.V. through the laptop or phone mic, because the Echo's microphone belongs to Alexa. (A spoken "Alexa, ask E.V. …" skill would require exposing E.V. to the internet, so it isn't included.)
+
+### Let E.V. control your Fire TV (about 10 minutes)
+1. **Turn on ADB debugging on the Fire TV:** Settings → My Fire TV → Developer options → **ADB debugging: ON**. If you don't see Developer options, go to My Fire TV → About and click your device name 7 times.
+2. **Find the TV's IP address:** My Fire TV → About → Network (for example `192.168.1.40`). In your router, give it a fixed (reserved) IP so it doesn't change.
+3. **Get ADB for Windows:** download Google's [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools) ZIP and extract it **into your E.V. folder**, so you have `EV\platform-tools\adb.exe`. E.V. finds it automatically.
+4. In E.V., open **Settings → Fire TV**, enter the IP, click **Save**, then **Test connection**.
+5. **On the TV**, an "Allow USB debugging?" box appears. Tick **Always allow from this computer** and press **OK**. Then click **Test connection** again.
+
+Now you can say things like *"pause the TV"*, *"turn the volume up three"*, *"open Netflix"*, *"put the TV to sleep"*, or *"what's on the TV?"*.
+
+- **Approvals:** TV commands ask first, like any change. To make the remote instant, go to **Tools & Skills**, find `tv_remote` (and `tv_open_app` if you like), and switch on **run without asking**. Sending, deleting, memory changes, and scheduling can never skip approval.
+- **What E.V. can confirm:** ADB confirms that a button press *reached* the TV. It can't see the screen, so E.V. won't claim more than that.
+- **Volume:** on some setups the TV, not the Fire Stick, controls volume, so volume commands may have no effect.
+- **Security:** while ADB debugging is on, any device on your Wi-Fi could *ask* the TV for access. Only devices you approve on the TV screen get in. Turn ADB debugging off if you stop using this.
+
 ## Phone access
 
 **Option A: Tailscale (recommended).** You get HTTPS, so the microphone works, and E.V. isn't exposed to your Wi-Fi network.
@@ -124,7 +151,7 @@ FastAPI backend (backend/)
    │     approvals.py / jobs.py / documents.py / files.py / data.py / briefing.py / insights.py
    ├── tools/
    │     registry.py  permission gate, validation, timeouts, audit log
-   │     builtin.py   the 24 tools E.V. can call
+   │     builtin.py   the 28 tools E.V. can call
    ├── providers/     common interface over Groq/OpenAI/Gemini/OpenRouter/Ollama and the Anthropic SDK
    ├── integrations/  weather, GitHub, ElevenLabs + Groq Whisper, SMTP, system monitor
    └── db.py          SQLite (data/ev.db), with full-text search for the Knowledge Base
@@ -149,7 +176,7 @@ Everything in `frontend/` is plain files: `index.html`, `css/ev.css`, and `js/*.
 python -m venv .venv
 .venv\Scripts\activate            # Windows  (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements-dev.txt
-python -m pytest                  # 46 tests, no network or real keys needed
+python -m pytest                  # 56 tests, no network or real keys needed
 python run.py                     # http://localhost:8000
 ```
 

@@ -148,8 +148,16 @@ def needs_approval(t: Tool) -> bool:
     if confirm:
         return True
     if t.level == Level.WRITE:
+        if t.name in (settings.get("tools.auto_approve") or []):
+            return False                             # you chose "run without asking" for this tool
         return settings.get("permissions.reversible_write") != "auto"
     return False
+
+
+def can_auto_approve(t: Tool) -> bool:
+    """Only reversible writes that don't insist on confirmation may skip the prompt."""
+    confirm = t.always_confirm() if callable(t.always_confirm) else t.always_confirm
+    return t.level == Level.WRITE and not confirm
 
 
 def _redact(value: Any) -> Any:
@@ -267,6 +275,8 @@ def describe_all() -> list[dict[str, Any]]:
             "category": t.category,
             "enabled": t.name not in disabled,
             "requires_approval": needs_approval(t),
+            "can_auto_approve": can_auto_approve(t),
+            "auto_approve": t.name in (settings.get("tools.auto_approve") or []),
             "setup_issue": t.setup_issue(),
             "timeout_s": t.timeout,
         })

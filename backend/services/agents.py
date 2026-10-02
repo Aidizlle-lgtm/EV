@@ -41,10 +41,11 @@ AGENTS: dict[str, Agent] = {a.id: a for a in [
           "and events first to avoid duplicates.",
           ["list_tasks", "create_task", "update_task", "delete_task", "list_events", "create_event", "delete_event",
            "list_workflows", "schedule_workflow", "draft_email", "send_email"], icon="tasks"),
-    Agent("system", "System Agent", "Laptop health, weather, and GitHub",
-          "You are in System mode. Report on the user's computer, weather, and GitHub review queue using tools. "
-          "Quote real numbers from tool results only.",
-          ["system_status", "get_weather", "github_review_requests"], icon="system"),
+    Agent("system", "System Agent", "Laptop, TV, weather, and GitHub",
+          "You are in System mode. Report on the user's computer, Fire TV, weather, and GitHub review queue using "
+          "tools, and control the Fire TV when asked. Quote real numbers from tool results only.",
+          ["system_status", "get_weather", "github_review_requests", "tv_status", "tv_remote", "tv_open_app", "tv_list_apps"],
+          icon="system"),
     Agent("browser", "Browser Agent", "Web browsing and automation",
           "", [], implemented=False, icon="browser"),
 ]}

@@ -1,6 +1,7 @@
 """Non-secret preferences stored in SQLite (secrets live in .env — see config.py)."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .. import db
@@ -24,6 +25,7 @@ DEFAULTS: dict[str, Any] = {
     "permissions.reversible_write": "ask",   # ask | auto  (external/destructive is ALWAYS ask)
     "permissions.approval_timeout_s": 600,
     "tools.disabled": [],
+    "tools.auto_approve": [],            # reversible-write tools you chose to run without asking
     "memory.require_approval": True,
     # Voice
     "voice.tts": "auto",                 # auto | elevenlabs | browser | off
@@ -43,6 +45,9 @@ DEFAULTS: dict[str, Any] = {
     "smtp.port": 587,
     "smtp.user": "",
     "smtp.from": "",
+    # Fire TV (ADB on your home network)
+    "firetv.host": "",
+    "firetv.adb_path": "",
     # Live feed / background insights
     "feed.enabled": True,
     "feed.cpu_alert_percent": 90,
@@ -85,6 +90,10 @@ def get(key: str) -> Any:
 def put(key: str, value: Any) -> None:
     if not _valid_key(key):
         raise ValueError(f"Unknown setting: {key}")
+    if key == "firetv.host" and value and not re.match(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}(:\d{1,5})?$", str(value).strip()):
+        raise ValueError("Fire TV address must be an IP like 192.168.1.40 (optionally :5555)")
+    if key in ("tools.disabled", "tools.auto_approve") and not (isinstance(value, list) and all(isinstance(v, str) for v in value)):
+        raise ValueError(f"{key} must be a list of tool names")
     if key in CHOICES and value not in CHOICES[key]:
         raise ValueError(f"{key} must be one of {sorted(CHOICES[key])}")
     default = DEFAULTS.get(key)

@@ -290,7 +290,11 @@ export function renderTools(view) {
       : [h("div", { class: "empty" }, "Nothing waiting.")]));
     tools.replaceChildren(h("table", { class: "table" }, h("tr", {}, ["Tool", "Level", "Approval", "Status", "On"].map((c) => h("th", {}, c))),
       t.tools.map((x) => h("tr", {}, h("td", {}, h("b", {}, x.name), h("div", { class: "small muted" }, x.description)), h("td", {}, levelChip(x.level, x.level_label)),
-        h("td", {}, x.requires_approval ? "Asks you" : "Automatic"), h("td", {}, x.setup_issue ? h("span", { class: "st-setup_required small" }, "Setup required") : h("span", { class: "st-ok small" }, "Ready")),
+        h("td", {}, x.can_auto_approve
+          ? h("label", { class: "inline small", title: "Run this tool without asking each time" },
+              sw(x.auto_approve, async (v) => { await guard(() => patch(`/api/tools/${x.name}`, { auto_approve: v }), v ? `${x.name} will run without asking.` : `${x.name} will ask first.`); load(); }, `Run ${x.name} without asking`),
+              x.requires_approval ? "Asks you" : "Automatic")
+          : (x.requires_approval ? (x.level === "external" ? "Always asks" : "Asks you") : "Automatic")), h("td", {}, x.setup_issue ? h("span", { class: "st-setup_required small" }, "Setup required") : h("span", { class: "st-ok small" }, "Ready")),
         h("td", {}, sw(x.enabled, (v) => guard(() => patch(`/api/tools/${x.name}`, { enabled: v }), v ? "Enabled." : "Disabled."), `Enable ${x.name}`))))));
   };
   const loadAudit = async () => {
@@ -361,17 +365,18 @@ export function renderSettings(view, { logout }) {
   const folderBox = h("div", { class: "stack" });
   const phoneBox = h("div", { class: "stack" });
   const secBox = h("div", { class: "stack" });
+  const tvBox = h("div", { class: "stack" });
   view.replaceChildren(head("Settings", "Integrations, keys, voice, folders, and security. Anything not connected shows “Setup required”."),
     h("div", { class: "stack" }, panel("Integrations", ints),
       h("div", { class: "grid-2" }, panel("API keys (stored only in your local .env)", secrets), panel("Voice", voiceBox)),
       h("div", { class: "grid-2" }, panel("Laptop folders", folderBox), panel("Weather & location", wxBox)),
       h("div", { class: "grid-2" }, panel("Email sending (SMTP)", smtpBox), panel("Phone access", phoneBox)),
-      panel("Security", secBox)));
+      h("div", { class: "grid-2" }, panel("Fire TV", tvBox), panel("Security", secBox))));
 
   const load = async () => {
     const [list, cfg, folders, sys] = await Promise.all([api("/api/integrations"), api("/api/settings"), api("/api/folders"), api("/api/system")]);
     const s = cfg.settings;
-    const testable = new Set(["weather", "github", "elevenlabs", "email"]);
+    const testable = new Set(["weather", "github", "elevenlabs", "email", "firetv"]);
     ints.replaceChildren(...list.map((i) => h("div", { class: "row" },
       h("div", { class: "grow" }, h("div", { class: "t" }, i.name, h("span", { class: "muted small" }, ` · ${i.category}`)), h("div", { class: "s" }, i.detail)),
       statusChip(i.status, i.detail),
@@ -397,6 +402,7 @@ export function renderSettings(view, { logout }) {
       h("datalist", { id: "eleven-models" }, ["eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5"].map((m) => h("option", { value: m }))),
       h("label", { class: "inline" }, sw(speakReplies, (v) => (speakReplies = v), "Speak typed replies too"), "Also speak replies to typed messages"),
       h("p", { class: "small muted", style: { margin: 0 } }, "eleven_multilingual_v2 sounds most natural; eleven_flash_v2_5 starts speaking faster. Character usage counts against your ElevenLabs plan."),
+      h("div", { class: "callout info small" }, "Hear E.V. through your Echo: say “Alexa, pair Bluetooth”, then on this laptop open Settings → Bluetooth & devices → Add device and pick the Echo. E.V.'s voice will play from the Echo. Turn on “Also speak replies to typed messages” below to hear every answer."),
       h("div", { class: "inline" }, h("button", { class: "btn primary", onclick: async () => { if (await guard(() => patch("/api/settings", { "voice.tts": tts.value, "voice.stt": stt.value, "voice.elevenlabs_voice_id": vid.value.trim(), "voice.elevenlabs_model": vmodel.value.trim(), "voice.max_tts_chars": +maxc.value, "voice.speak_replies": speakReplies }), "Voice saved.")) { await loadVoiceConfig(); changed(); } } }, "Save voice"),
         h("button", { class: "btn", onclick: async () => { await loadVoiceConfig(); speak("Hello. E.V. voice systems are online."); } }, icon("speaker"), "Test voice")));
 
@@ -436,6 +442,24 @@ export function renderSettings(view, { logout }) {
       h("p", { class: "small muted", style: { margin: 0 } }, "To use E.V. from your phone: set EV_HOST=0.0.0.0 in .env, restart, allow it through Windows Firewall (private networks only), and open one of these on the same Wi-Fi:"),
       h("div", { class: "rows" }, lan.length ? lan.map((ip) => h("div", { class: "row" }, icon("wifi"), h("code", {}, `${location.protocol}//${ip}:${location.port || (location.protocol === "https:" ? 443 : 80)}`))) : h("div", { class: "empty" }, "No network address found.")),
       h("p", { class: "small muted", style: { margin: 0 } }, "Phones only allow the microphone over HTTPS. Typing works over plain Wi-Fi; for voice, use Tailscale HTTPS (see README)."));
+
+    const tvHost = h("input", { type: "text", value: s["firetv.host"], placeholder: "e.g. 192.168.1.40" });
+    const tvAdb = h("input", { type: "text", value: s["firetv.adb_path"], placeholder: "Leave blank to auto-detect" });
+    const tvInt = list.find((i) => i.id === "firetv");
+    tvBox.replaceChildren(
+      h("p", { class: "small muted", style: { margin: 0 } }, "E.V. controls your Fire TV over your home Wi-Fi using ADB — nothing goes through the internet. On the TV: Settings → My Fire TV → Developer options → ADB debugging ON. Find its IP under My Fire TV → About → Network."),
+      h("div", { class: "form-grid" }, field("Fire TV IP address", tvHost), field("ADB path (optional)", tvAdb)),
+      tvInt ? h("div", { class: "inline small" }, statusChip(tvInt.status, tvInt.detail), h("span", { class: "muted" }, tvInt.detail)) : null,
+      h("div", { class: "inline" },
+        h("button", { class: "btn primary", onclick: async () => { if (await guard(() => patch("/api/settings", { "firetv.host": tvHost.value.trim(), "firetv.adb_path": tvAdb.value.trim() }), "Fire TV saved.")) load(); } }, "Save"),
+        h("button", { class: "btn", onclick: async (e) => {
+          e.target.disabled = true;
+          toast("Connecting… if your TV shows “Allow USB debugging?”, choose Always allow.");
+          const r = await guard(() => post("/api/integrations/firetv/test"));
+          if (r) toast(r.ok ? `Connected: ${r.result.model}${r.result.foreground_app ? ` · showing ${r.result.foreground_app}` : ""}` : r.error, r.ok ? "ok" : "err");
+          load();
+        } }, icon("refresh"), "Test connection")),
+      h("p", { class: "small muted", style: { margin: 0 } }, "Each TV command asks you first. To make it instant, turn on “run without asking” for tv_remote (and tv_open_app) in Tools & Skills."));
 
     const cur = h("input", { type: "password", autocomplete: "current-password" });
     const nw = h("input", { type: "password", minlength: 6, autocomplete: "new-password" });

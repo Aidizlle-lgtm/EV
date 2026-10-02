@@ -321,9 +321,17 @@ def _short(result: Any) -> str:
             if isinstance(v, dict):
                 label = v.get("title") or v.get("content") or v.get("name") or v.get("subject") or ""
                 return f"{key} #{v.get('id', '')} {label}"[:160]
+        if "sent" in result:
+            times = f" ×{result['times']}" if result.get("times", 1) > 1 else ""
+            return f"pressed {str(result['sent']).replace('_', ' ')}{times}"
+        if "opened" in result:
+            return f"opened {result['opened']}"
         for key, v in result.items():
             if isinstance(v, list):
                 return f"{len(v)} {key}"
+        scalars = [f"{k}: {v}" for k, v in result.items() if isinstance(v, (str, int, float, bool)) and k != "note"]
+        if scalars:
+            return " · ".join(scalars[:3])[:160]
     return str(result)[:160]
 
 

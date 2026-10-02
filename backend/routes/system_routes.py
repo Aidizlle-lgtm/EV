@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import config, db, providers
-from ..integrations import email_smtp, github, system_monitor, voice, weather
+from ..integrations import email_smtp, firetv, github, system_monitor, voice, weather
 from ..providers.base import ProviderError
 from ..services import agents, briefing, chat, data, files, settings, status
 from ..tools import registry
@@ -172,6 +172,8 @@ def integrations() -> list[dict[str, Any]]:
         status.state("github", github.configured(), "Add GITHUB_TOKEN (read-only fine-grained token)."))
     add("email", "Email sending (SMTP)", "Communication",
         status.state("email", email_smtp.configured(), "Add SMTP host, user, and SMTP_PASSWORD."))
+    add("firetv", "Fire TV remote (home network)", "Home",
+        status.state("firetv", firetv.configured(), firetv.setup_issue() or ""), host=settings.get("firetv.host"))
     folders = files.list_folders()
     add("folders", "Laptop folders", "Files",
         {"status": "connected" if folders else "setup_required",
@@ -201,6 +203,8 @@ async def test_integration(iid: str):
             async for chunk in voice.elevenlabs_stream("E.V. voice check."):
                 size += len(chunk)
             return {"ok": True, "result": f"Received {size} bytes of audio"}
+        if iid == "firetv":
+            return {"ok": True, "result": await asyncio.to_thread(firetv.tv_status)}
         if iid == "email":
             await asyncio.to_thread(email_smtp.check_login)
             return {"ok": True, "result": "SMTP login OK — nothing was sent."}
@@ -244,18 +248,29 @@ def get_tools():
 
 
 class ToolToggle(BaseModel):
-    enabled: bool
+    enabled: bool | None = None
+    auto_approve: bool | None = None
 
 
 @router.patch("/tools/{name}")
 def toggle_tool(name: str, body: ToolToggle):
-    if name not in registry.TOOLS:
+    t = registry.TOOLS.get(name)
+    if t is None:
         raise HTTPException(404, "Unknown tool")
-    disabled = set(settings.get("tools.disabled") or [])
-    disabled.discard(name) if body.enabled else disabled.add(name)
-    settings.put("tools.disabled", sorted(disabled))
-    registry.audit(actor="user", tool_name="toggle_tool", level="reversible_write", args={"tool": name, "enabled": body.enabled}, status="ok")
-    return {"name": name, "enabled": body.enabled}
+    if body.enabled is not None:
+        disabled = set(settings.get("tools.disabled") or [])
+        disabled.discard(name) if body.enabled else disabled.add(name)
+        settings.put("tools.disabled", sorted(disabled))
+    if body.auto_approve is not None:
+        if body.auto_approve and not registry.can_auto_approve(t):
+            raise HTTPException(400, f"{name} always asks for approval ({registry.LEVEL_INFO[t.level.value]['label']}); that can't be turned off.")
+        auto = set(settings.get("tools.auto_approve") or [])
+        auto.add(name) if body.auto_approve else auto.discard(name)
+        settings.put("tools.auto_approve", sorted(auto))
+    registry.audit(actor="user", tool_name="toggle_tool", level="reversible_write",
+                   args={"tool": name, **body.model_dump(exclude_none=True)}, status="ok")
+    return {"name": name, "enabled": name not in (settings.get("tools.disabled") or []),
+            "auto_approve": name in (settings.get("tools.auto_approve") or []), "requires_approval": registry.needs_approval(t)}
 
 
 @router.get("/agents")
