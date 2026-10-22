@@ -177,7 +177,8 @@ function agentCard(a, reload) {
       h("div", { class: "inline", style: { marginTop: "6px" } }, h("select", { "aria-label": "Market data source", onchange: async (e) => { await guard(() => patch("/api/settings", { "market_data.source": e.target.value }), "Saved."); reload(); } },
         [...md.available.map((x) => h("option", { value: x.id, selected: md.source === x.id }, x.is_live ? x.label : "Test data (synthetic)")), h("option", { value: "none", selected: md.source === "none" }, "Off")])),
       h("div", { class: "small muted", style: { marginTop: "4px" } }, "Live sources that could be added: ", md.options.map((o) => `${o.name} (${o.credential})`).join(" · "))) : null,
-    a.kind === "specialist" ? h("p", { class: "small muted" }, "Ask E.V. — she delegates to this specialist and explains the report.")
+    a.kind === "specialist" ? h("div", { class: "inline" }, h("a", { class: "btn sm primary", href: `#/${a.id}` }, icon("chart"), `Open ${a.name}`),
+      h("span", { class: "small muted" }, "or ask E.V. — she delegates and explains the report."))
       : a.status !== "not_implemented" ? h("button", { class: "btn sm primary", onclick: () => openChat({ agent: a.id }) }, icon("chat"), "Open chat") : null);
 }
 

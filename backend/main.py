@@ -14,7 +14,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import auth, config, db
-from .routes import auth_routes, chat_routes, data_routes, system_routes
+from .routes import auth_routes, chat_routes, data_routes, specialist_routes, system_routes
 from .services import jobs
 from .tools import builtin  # noqa: F401 - registers the built-in tools
 from .tools import market  # noqa: F401 - registers F.R.I.D.A.Y.'s read-only market-data tools
@@ -96,7 +96,7 @@ def create_app(start_scheduler: bool = True) -> FastAPI:
         problems = "; ".join(f"{'.'.join(str(p) for p in e['loc'][1:]) or 'body'}: {e['msg']}" for e in exc.errors()[:5])
         return JSONResponse({"detail": f"Invalid input — {problems}"}, 422)
 
-    for r in (auth_routes.router, chat_routes.router, data_routes.router, system_routes.router):
+    for r in (auth_routes.router, chat_routes.router, data_routes.router, system_routes.router, specialist_routes.router):
         app.include_router(r)
 
     app.mount("/static", StaticFiles(directory=config.FRONTEND_DIR), name="static")

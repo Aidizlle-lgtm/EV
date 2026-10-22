@@ -185,8 +185,9 @@ function setBusy(on) {
 
 async function stopRun() {
   stopSpeaking();
+  const ctrl = S.ctrl;   // abort only THIS request, never a new one sent right after Stop
   if (S.runId) { try { await post(`/api/runs/${S.runId}/cancel`); } catch { /* fall through to abort */ } }
-  setTimeout(() => S.ctrl?.abort(), 1500);
+  setTimeout(() => ctrl?.abort(), 1500);
 }
 
 function scroll() { const log = $("chat-log"); log.scrollTop = log.scrollHeight; }

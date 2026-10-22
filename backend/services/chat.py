@@ -14,7 +14,7 @@ from .. import db, providers
 from ..providers.base import ProviderError, ToolCall, TurnResult
 from ..tools import registry
 from ..tools.registry import TOOLS, Level, ToolContext, ToolError
-from . import agents, approvals, connections, persona, routing, settings
+from . import agents, approvals, connections, persona, routing, settings, status
 from .routing import FALLBACK_KINDS  # noqa: F401  (re-exported for older imports)
 
 log = logging.getLogger("ev.chat")
@@ -165,11 +165,22 @@ async def stream_chat(conversation_id: int, text: str, agent_id: str | None = No
     if not conv:
         yield {"type": "error", "kind": "not_found", "message": "Conversation not found."}
         return
-    agent = agents.get(agent_id or conv["agent"])
+    owner = agents.get_any(conv["agent"])
+    if owner is not None and owner.kind == "specialist":
+        # A specialist's own conversation (its workspace). It always belongs to that agent:
+        # the requested mode is ignored, so a conversation can never switch identity.
+        agent, direct = owner, True
+    else:
+        agent, direct = agents.get(agent_id or conv["agent"]), False   # E.V. or one of her modes, never a specialist
     tool_names = _tool_names(agent)
     specs = [TOOLS[n].spec() for n in tool_names]
-    system = persona.system_prompt(agent.id, tool_names)
-    _save(conversation_id, "user", text, meta={"context": persona.turn_context(agent.id), "agent": agent.id})
+    if direct:
+        system = persona.specialist_system_prompt(agent, tool_names, mode="direct")
+        context = persona.specialist_context(agent)
+    else:
+        system = persona.system_prompt(agent.id, tool_names)
+        context = persona.turn_context(agent.id)
+    _save(conversation_id, "user", text, meta={"context": context, "agent": agent.id})
     if conv["title"] == "New conversation":
         title = " ".join(text.split())[:60] or "New conversation"
         db.execute("UPDATE conversations SET title = ?, agent = ? WHERE id = ?", (title, agent.id, conversation_id))
@@ -186,9 +197,17 @@ async def stream_chat(conversation_id: int, text: str, agent_id: str | None = No
     run = Run(id=uuid.uuid4().hex, conversation_id=conversation_id, agent=agent.id)
     RUNS[run.id] = run
     yield {"type": "run", "run_id": run.id, "conversation_id": conversation_id, "provider": provider.id,
-           "provider_label": provider.label, "model": model, "agent": agent.id}
+           "provider_label": provider.label, "model": model, "agent": agent.id, "agent_name": agent.name}
 
-    max_steps = int(settings.get("llm.max_steps") or 8)
+    # Specialists keep the same step and time limits whether E.V. or you started the conversation.
+    max_steps = agent.max_steps if direct else int(settings.get("llm.max_steps") or 8)
+    watchdog: asyncio.Task | None = None
+    if direct:
+        async def _time_limit() -> None:
+            await asyncio.sleep(agent.timeout_s)
+            run.state["stop_reason"] = "timeout"
+            run.cancel.set()
+        watchdog = asyncio.ensure_future(_time_limit())
     partial: list[str] = []
     pending: dict[str, str] = {}  # tool calls without a saved result yet
     queue: asyncio.Queue = asyncio.Queue()
@@ -216,8 +235,11 @@ async def stream_chat(conversation_id: int, text: str, agent_id: str | None = No
                     while not queue.empty():
                         yield queue.get_nowait()
                     result = turn_task.result() if not turn_task.cancelled() else None
+                    if result is not None:
+                        status.record(f"llm:{route.connection}", True, f"Last reply succeeded ({model})")
                     break
                 except ProviderError as e:
+                    status.record(f"llm:{route.connection}", False, e.message)
                     # Fallback only before anything was streamed, and only for the first model call of a reply.
                     nxt = attempts.after_failure(route, e, streamed=bool(partial) or step > 0)
                     if nxt is None:
@@ -233,10 +255,14 @@ async def stream_chat(conversation_id: int, text: str, agent_id: str | None = No
                         turn_task.cancel()
 
             if run.cancel.is_set() or result is None:
+                timed_out = run.state.get("stop_reason") == "timeout"
                 if partial:
-                    _save(conversation_id, "assistant", "".join(partial) + "\n\n[Reply stopped by the user]",
+                    note = f"[Stopped: {agent.name}'s {int(agent.timeout_s)}-second limit]" if timed_out else "[Reply stopped by the user]"
+                    _save(conversation_id, "assistant", "".join(partial) + "\n\n" + note,
                           provider=provider.id, model=model, status="cancelled")
-                yield {"type": "cancelled"}
+                if timed_out:
+                    yield {"type": "notice", "message": f"Stopped: {agent.name}'s {int(agent.timeout_s)}-second limit for one reply was reached."}
+                yield {"type": "cancelled", **({"reason": "timeout"} if timed_out else {})}
                 finished = True
                 return
 
@@ -258,14 +284,17 @@ async def stream_chat(conversation_id: int, text: str, agent_id: str | None = No
                 pending.pop(call.id, None)
                 if run.cancel.is_set():
                     for cid, name in pending.items():
-                        _save(conversation_id, "tool", '{"status":"cancelled","message":"Stopped by the user before running."}',
+                        _save(conversation_id, "tool", '{"status":"cancelled","message":"Stopped before running."}',
                               tool_call_id=cid, name=name)
                     pending = {}
+                    if run.state.get("stop_reason") == "timeout":
+                        yield {"type": "notice", "message": f"Stopped: {agent.name}'s {int(agent.timeout_s)}-second limit for one reply was reached."}
                     yield {"type": "cancelled"}
                     finished = True
                     return
             yield {"type": "step", "step": step + 1}
-        yield {"type": "notice", "message": f"Stopped after {max_steps} tool steps to stay safe. Ask me to continue if needed."}
+        who = agent.name if direct else "E.V."
+        yield {"type": "notice", "message": f"{who} stopped after {max_steps} tool steps to stay safe. Ask to continue if needed."}
         yield {"type": "done"}
         finished = True
     except ProviderError as e:
@@ -277,6 +306,8 @@ async def stream_chat(conversation_id: int, text: str, agent_id: str | None = No
         finished = True
     finally:
         RUNS.pop(run.id, None)
+        if watchdog is not None:
+            watchdog.cancel()
         if not finished:  # client disconnected or server shutting down mid-run
             run.cancel.set()
             if partial:
@@ -289,8 +320,15 @@ async def stream_chat(conversation_id: int, text: str, agent_id: str | None = No
 
 async def _handle_tool(run: Run, call: ToolCall, allowed: set[str] | None = None) -> AsyncIterator[dict[str, Any]]:
     progress: asyncio.Queue = asyncio.Queue()
-    ctx = ToolContext(actor="assistant", conversation_id=run.conversation_id, agent="ev", depth=0,
-                      cancel=run.cancel, emit=progress.put_nowait, run_state=run.state)
+    spec = agents.get_any(run.agent)
+    specialist = spec is not None and spec.kind == "specialist"
+    if specialist:   # a specialist's own conversation: same identity and caps as when E.V. delegates
+        ctx = ToolContext(actor=f"agent:{spec.id}", conversation_id=run.conversation_id, agent=spec.id,
+                          depth=agents.MAX_DELEGATION_DEPTH, max_level=spec.max_level or Level.READ,
+                          cancel=run.cancel, emit=progress.put_nowait, run_state=run.state)
+    else:
+        ctx = ToolContext(actor="assistant", conversation_id=run.conversation_id, agent="ev", depth=0,
+                          cancel=run.cancel, emit=progress.put_nowait, run_state=run.state)
     t = TOOLS.get(call.name)
     yield {"type": "tool_start", "id": call.id, "name": call.name, "args": call.arguments or {},
            "level": t.level.value if t else "unknown"}
@@ -303,6 +341,8 @@ async def _handle_tool(run: Run, call: ToolCall, allowed: set[str] | None = None
                            conversation_id=run.conversation_id)
             raise ToolError("denied", f"'{call.name}' isn't available in this mode.")
         prepared = registry.prepare(call.name, call.arguments, ctx, parse_error=call.parse_error)
+        if prepared.needs_approval and specialist:
+            raise ToolError("denied", "Specialists can't run actions that need approval. Suggest it to the user instead.")
         if prepared.needs_approval:
             appr = approvals.create(prepared, ctx)
             approval_id = appr["id"]
@@ -399,6 +439,30 @@ def _short(result: Any) -> str:
 
 
 # ------------------------------------------------------------------ non-interactive loops
+async def _cancellable(cancel: asyncio.Event | None, coro) -> Any:
+    """Await `coro`, but abandon it at once (returning None) when `cancel` is set — even if a
+    provider is in the middle of a slow request that hasn't streamed anything yet."""
+    if cancel is None:
+        return await coro
+    task = asyncio.ensure_future(coro)
+    waiter = asyncio.ensure_future(cancel.wait())
+    try:
+        await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            return task.result()
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        return None
+    finally:
+        waiter.cancel()
+        if not task.done():
+            task.cancel()
+
+
+
 @dataclass
 class LoopResult:
     text: str
@@ -431,10 +495,13 @@ async def run_loop(*, agent_route: str, system: str, messages: list[dict[str, An
         while True:
             texts.clear()
             try:
-                result = await _one_turn(ctx.cancel, provider, route.model, system, messages, specs, collect,
-                                         connections.temperature(route.connection))
+                result = await _cancellable(ctx.cancel, _one_turn(ctx.cancel, provider, route.model, system, messages,
+                                                                   specs, collect, connections.temperature(route.connection)))
+                if result is not None:
+                    status.record(f"llm:{route.connection}", True, f"Last reply succeeded ({route.model})")
                 break
             except ProviderError as e:
+                status.record(f"llm:{route.connection}", False, e.message)
                 nxt = attempts.after_failure(route, e, streamed=False)  # nothing reaches the user mid-loop
                 if nxt is None:
                     raise

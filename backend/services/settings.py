@@ -54,10 +54,11 @@ DEFAULTS: dict[str, Any] = {
     # Market data for F.R.I.D.A.Y. — separate from AI connections. "test" = clearly
     # labelled synthetic data (no live source is connected yet); "none" = off.
     "market_data.source": "test",
+    "market.watchlist": [],              # symbols shown in F.R.I.D.A.Y.'s workspace
 }
 
 # Per-agent model routing: agents.<agent_id>.connection | .model | .fallbacks
-AGENT_KEY_RE = re.compile(r"^agents\.[a-z0-9_]{1,30}\.(connection|model|fallbacks)$")
+AGENT_KEY_RE = re.compile(r"^agents\.[a-z0-9_]{1,30}\.(connection|model|fallbacks|voice)$")
 
 # Model chosen per provider is stored under "llm.model.<provider>".
 DEFAULT_MODELS = {
@@ -92,7 +93,7 @@ def get(key: str) -> Any:
     if key.startswith("llm.model."):
         return DEFAULT_MODELS.get(key[10:], "")
     if AGENT_KEY_RE.match(key):
-        return [] if key.endswith(".fallbacks") else ""
+        return [] if key.endswith(".fallbacks") else {} if key.endswith(".voice") else ""
     return DEFAULTS.get(key)
 
 
@@ -101,6 +102,10 @@ def put(key: str, value: Any) -> None:
         raise ValueError(f"Unknown setting: {key}")
     if key == "firetv.host" and value and not re.match(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}(:\d{1,5})?$", str(value).strip()):
         raise ValueError("Fire TV address must be an IP like 192.168.1.40 (optionally :5555)")
+    if key == "market.watchlist":
+        if not (isinstance(value, list) and len(value) <= 30 and all(
+                isinstance(v, str) and re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", v) for v in value)):
+            raise ValueError("Watchlist must be up to 30 ticker symbols like MSFT or BRK.B")
     if key in ("tools.disabled", "tools.auto_approve") and not (isinstance(value, list) and all(isinstance(v, str) for v in value)):
         raise ValueError(f"{key} must be a list of tool names")
     if AGENT_KEY_RE.match(key):
@@ -110,6 +115,10 @@ def put(key: str, value: Any) -> None:
                 and isinstance(f.get("model", ""), str) and len(f.get("model", "")) <= 200 for f in value)
             if not ok:
                 raise ValueError("Fallbacks must be a list of up to 4 {connection, model} entries")
+        elif key.endswith(".voice"):
+            if not (isinstance(value, dict) and set(value) <= {"provider", "voice_id", "model"}
+                    and all(isinstance(v, str) and len(v) <= 120 for v in value.values())):
+                raise ValueError("Voice settings must be {provider, voice_id, model} text values")
         elif not isinstance(value, str) or len(value) > 200:
             raise ValueError(f"{key} must be text")
     if key in CHOICES and value not in CHOICES[key]:

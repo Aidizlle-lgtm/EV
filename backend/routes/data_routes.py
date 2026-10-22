@@ -326,6 +326,6 @@ def global_search(q: str):
         "memories": db.rows("SELECT id, content, category FROM memories WHERE content LIKE ? LIMIT 10", (like,)),
         "documents": [{k: h[k] for k in ("ref", "document_id", "text")} for h in documents.search(q, 5)],
         "conversations": db.rows(
-            "SELECT DISTINCT c.id, c.title FROM conversations c JOIN messages m ON m.conversation_id = c.id "
+            "SELECT DISTINCT c.id, c.title, c.agent FROM conversations c JOIN messages m ON m.conversation_id = c.id "
             "WHERE (c.title LIKE ? OR (m.role IN ('user','assistant') AND m.content LIKE ?)) LIMIT 10", (like, like)),
     }

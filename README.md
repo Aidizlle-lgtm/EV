@@ -31,7 +31,7 @@ E.V. is a personal AI assistant that runs on your Windows laptop and opens in yo
 | Reading files and creating files on your laptop | ⚙️ Setup required | Folders you authorize |
 | Google Calendar sync, Gmail inbox, web search, browser automation, calls/SMS, purchases and bookings | 🚧 Planned, not built | The app labels these "Not built yet" |
 
-**Note on testing:** All 90 automated tests pass. I also ran full browser walkthroughs: first-run setup, streamed chat, a tool call, the approval card, approving it, and the task being created, at both desktop and phone sizes; plus "Pause the TV" through to the ADB command, using a stand-in for `adb` because no Fire TV is reachable from my build environment. **However, my build environment's network blocks Groq, ElevenLabs, and Open-Meteo**, so I tested those integrations against simulated (mocked) APIs, not the real services. The first real call happens on your laptop. The **Test** buttons in the app check each integration and report the result.
+**Note on testing:** All 110 automated tests pass. I also ran full browser walkthroughs: first-run setup, streamed chat, a tool call, the approval card, approving it, and the task being created, at both desktop and phone sizes; plus "Pause the TV" through to the ADB command, using a stand-in for `adb` because no Fire TV is reachable from my build environment. **However, my build environment's network blocks Groq, ElevenLabs, and Open-Meteo**, so I tested those integrations against simulated (mocked) APIs, not the real services. The first real call happens on your laptop. The **Test** buttons in the app check each integration and report the result.
 
 ---
 
@@ -148,8 +148,33 @@ You talk to E.V. When a request needs a specialist, she calls `delegate_to_speci
 | Several providers and several keys per provider | ✅ AI Core → **Connections** |
 | Your own prompt files for each agent | ✅ `prompts/` (see `prompts/README.md`) |
 | Memory scopes: shared vs. specialist-only | ✅ Memory page → "Who can read it" |
+| **F.R.I.D.A.Y.'s own workspace** (`#/friday`): direct chat, Analyze company, chart, watchlist, reports | ✅ Built from your design reference. Open it from **Agents → Open F.R.I.D.A.Y.** |
 | J.A.R.V.I.S. and the other specialists | 🚧 Next milestone |
 | Per-agent voices, agent-to-agent messaging, ULTRON review | 🚧 Later phases |
+
+### F.R.I.D.A.Y.'s workspace
+Her screen follows your mockup: a gold theme, her own navigation, a chart and watchlist, the Investment-thesis panels, chat, and a presence panel. The **E.V. HUB** button returns to E.V.'s dashboard.
+
+- **Same F.R.I.D.A.Y. in both places.** Whether E.V. delegates or you talk to her directly, she uses the same prompt file, tools, read-only cap, memory filter, AI connection, step limit, and time limit.
+- **Separate history.** Her conversations belong to her, and asking for "E.V." inside one doesn't switch it. They don't appear in E.V.'s history, and E.V. never sees their content (tested).
+- **Analyze company** runs the same code path as E.V.'s delegation. It streams progress and can be stopped. It fills the Thesis, Bull / Base / Bear, Risks, Action plan, Summary, and Sources panels. Reports are saved, and reports E.V. requested show under **To E.V.**
+- **Stop** cancels her current reply or analysis immediately, even mid-request. Once voice exists, Stop will also stop playback; the hook is already in place.
+- **Status is real.** "Ready" means her last model call succeeded. "Configured — not tested yet" means a key and model are set but haven't been used yet this session. Other states: *Setup required*, *Model error*, *Cooling down*, and *Working*.
+
+**Places where the build differs from the mockup:**
+
+| Mockup shows | What's built | Why |
+|---|---|---|
+| Paper-account value, P/L, buying power | Last price, day change, 52-week range, market cap | Paper trading isn't built, and made-up balances would be misleading |
+| Candlesticks + volume, 1D / 1W | Line chart of daily closes, 1M–5Y | The current data source has no open/high/low or volume, and no intraday data |
+| Portfolio, Paper Trading, Trade Journal, Alerts | Screens marked **Not built yet**, listing what each needs | Not in this milestone |
+| "Simulate trade" button | Disabled | Same reason |
+| To J.A.R.V.I.S. card | Marked **Not built** | J.A.R.V.I.S. comes next |
+| Listening / Speaking, microphone | Shown but disabled: "Voice not connected" | No voice provider chosen yet, by design |
+| Attach button in chat | Left out | File attachments for F.R.I.D.A.Y. aren't built |
+| Portrait | Cropped from your mockup image (`frontend/assets/friday/portrait.webp`) | Swap in the full-resolution original if you have it |
+
+**Voice (prepared, off).** Voice settings are per agent (`agents.friday.voice`) and kept separate from AI connections and market data. No voice service is selected, nothing is purchased, and the microphone is never enabled for her. `backend/integrations/agent_voice.py` describes the four steps to turn voice on later. The intended style recorded there is calm, warm, confident, precise, and lightly Irish, from a licensed or original voice.
 
 ### Enforced in code (prompt files can't change these)
 - **Tools.** Each agent's tool list is fixed in `backend/services/agents.py`. If the AI calls a tool that isn't on its agent's list, the call is refused and logged. E.V. can't call F.R.I.D.A.Y.'s market tools directly; she has to delegate.
@@ -244,7 +269,7 @@ Everything in `frontend/` is plain files: `index.html`, `css/ev.css`, and `js/*.
 python -m venv .venv
 .venv\Scripts\activate            # Windows  (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements-dev.txt
-python -m pytest                  # 90 tests, no network or real keys needed
+python -m pytest                  # 110 tests, no network or real keys needed
 python run.py                     # http://localhost:8000
 ```
 

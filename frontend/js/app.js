@@ -4,6 +4,7 @@ import { h, icon, setIcon, toast, modal, relTime } from "./ui.js";
 import { renderDashboard, showAllNotifications } from "./views-dash.js";
 import { renderCore, renderAgents, renderTasks, renderCalendar, renderMemory, renderConversations, renderKnowledge, renderTools, renderWorkflows, renderSettings } from "./views-pages.js";
 import { initChat, openChat, loadAgents, voiceTurn } from "./chat.js";
+import { renderFriday } from "./friday.js";
 import { loadVoiceConfig, attachWave, onVoiceState, micSupportIssue } from "./voice.js";
 
 const $ = (id) => document.getElementById(id);
@@ -118,7 +119,17 @@ function buildShell() {
 }
 
 function route() {
-  const id = (location.hash.match(/^#\/(\w+)/) || [])[1] || "dashboard";
+  const m = location.hash.match(/^#\/(\w+)(?:\?(.*))?/) || [];
+  const id = m[1] || "dashboard";
+  // F.R.I.D.A.Y.'s workspace takes the whole screen, with her own look; E.V.'s shell is hidden, not destroyed.
+  if (id === "friday") {
+    if (typeof cleanup === "function") cleanup();
+    $("app").classList.add("hidden");
+    cleanup = renderFriday($("friday-root"), { query: Object.fromEntries(new URLSearchParams(m[2] || "")) });
+    document.title = "F.R.I.D.A.Y. · E.V.";
+    return;
+  }
+  $("app").classList.remove("hidden");
   const r = ROUTES.find((x) => x.id === id) || ROUTES[0];
   document.querySelectorAll("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === r.id));
   if (typeof cleanup === "function") cleanup();
@@ -212,7 +223,8 @@ function initSearch() {
           ...sec("Tasks", r.tasks, (t) => row(t.title, `${t.status}${t.due_at ? ` · due ${relTime(t.due_at)}` : ""}`, () => (location.hash = "#/tasks"))),
           ...sec("Memories", r.memories, (m) => row(m.content, m.category, () => (location.hash = "#/memory"))),
           ...sec("Documents", r.documents, (d) => row(d.ref, d.text.slice(0, 120), () => (location.hash = "#/knowledge"))),
-          ...sec("Conversations", r.conversations, (c) => row(c.title, null, () => openChat({ conversationId: c.id }))),
+          ...sec("Conversations", r.conversations, (c) => row(c.title, c.agent === "friday" ? "F.R.I.D.A.Y." : null,
+            () => (c.agent === "friday" ? (location.hash = `#/friday?c=${c.id}`) : openChat({ conversationId: c.id })))),
         ];
         box.replaceChildren(...(parts.length ? parts : [h("div", { class: "empty" }, "No results.")]));
         box.classList.remove("hidden");

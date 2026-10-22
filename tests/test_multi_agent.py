@@ -449,7 +449,8 @@ def test_prompt_files_are_loaded_and_status_detected(tmp_path, monkeypatch):
 
 def test_shipped_prompt_files_status():
     prompts._cache.clear()
-    assert prompts.load("FRIDAY").status == "temporary"
+    assert prompts.load("FRIDAY").status == "custom"          # the user's own starter prompt
+    assert "finance and market-research specialist" in prompts.load("FRIDAY").text
     assert prompts.load("EV").status == "starter"
     assert "You are E.V." in prompts.load("EV").text
 
@@ -457,14 +458,16 @@ def test_shipped_prompt_files_status():
 def test_agents_api_shows_specialist_policy(authed):
     agents_list = {a["id"]: a for a in authed.get("/api/agents").json()}
     fr = agents_list["friday"]
-    assert fr["kind"] == "specialist" and fr["prompt"]["status"] == "temporary"
+    assert fr["kind"] == "specialist" and fr["prompt"]["status"] == "custom"
     assert fr["policy"]["max_level"] == "read" and fr["market_data"]["data_status"] == "TEST_DATA"
     assert agents_list["ev"]["kind"] == "orchestrator"
 
 
-def test_specialists_cannot_be_chatted_with_directly(fake_provider):
+def test_ev_conversation_cannot_be_switched_to_a_specialist(fake_provider):
+    """Asking for 'friday' inside one of E.V.'s conversations still gets E.V.; F.R.I.D.A.Y.
+    is only reached through delegation or a conversation she owns (see test_friday_workspace.py)."""
     p = fake_provider([("I'm E.V.", [])])
-    conv = chat.create_conversation(agent="friday")
+    conv = chat.create_conversation(agent="ev")
     events = asyncio.run(chat_collect(conv["id"]))
     assert events[0]["agent"] == "ev"
     assert "delegate_to_specialist" in p.calls[0]["tools"]

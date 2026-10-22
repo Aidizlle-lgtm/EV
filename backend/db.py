@@ -176,6 +176,20 @@ CREATE TABLE IF NOT EXISTS connections (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+-- Reports specialists produced (for E.V. or from their own workspace). Shown in that
+-- specialist's workspace; never fed back into any agent's prompt automatically.
+CREATE TABLE IF NOT EXISTS agent_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent TEXT NOT NULL,
+    requested_by TEXT NOT NULL,           -- ev | user
+    symbol TEXT,
+    task TEXT NOT NULL,
+    status TEXT NOT NULL,                 -- completed | incomplete
+    data_status TEXT NOT NULL,            -- NONE | TEST_DATA | LIVE | DELAYED | CACHED | END_OF_DAY | MIXED
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_reports ON agent_reports(agent, symbol, id);
 """
 
 

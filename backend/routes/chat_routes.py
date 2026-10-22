@@ -29,15 +29,30 @@ class Decision(BaseModel):
     decision: str = Field(..., pattern="^(approve|deny)$")
 
 
+def _specialist_ids() -> list[str]:
+    return [a.id for a in agents.specialists()]
+
+
 @router.get("/conversations")
-def list_conversations(limit: int = 50):
-    return db.rows(
-        "SELECT c.*, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.role = 'user') AS turns "
-        "FROM conversations c ORDER BY updated_at DESC LIMIT ?", (min(limit, 500),))
+def list_conversations(limit: int = 50, agent: str | None = None):
+    """Without `agent`: E.V.'s history (her modes included). Specialists' own conversations
+    are listed only when asked for by agent id, e.g. ?agent=friday."""
+    base = ("SELECT c.*, (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.role = 'user') AS turns "
+            "FROM conversations c ")
+    if agent:
+        if agent not in _specialist_ids():
+            raise HTTPException(404, "Unknown specialist.")
+        return db.rows(base + "WHERE c.agent = ? ORDER BY updated_at DESC LIMIT ?", (agent, min(limit, 500)))
+    spec = _specialist_ids()
+    marks = ",".join("?" * len(spec)) or "''"
+    return db.rows(base + f"WHERE c.agent NOT IN ({marks}) ORDER BY updated_at DESC LIMIT ?", (*spec, min(limit, 500)))
 
 
 @router.post("/conversations")
 def create_conversation(body: NewConversation):
+    # A specialist's id creates a conversation owned by that specialist (its workspace chat).
+    if body.agent in _specialist_ids():
+        return chat.create_conversation(body.agent, title="New conversation")
     return chat.create_conversation(agents.get(body.agent).id)
 
 

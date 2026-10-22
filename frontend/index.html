@@ -9,6 +9,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/static/css/fonts.css">
   <link rel="stylesheet" href="/static/css/ev.css">
+  <link rel="stylesheet" href="/static/css/friday.css">
 </head>
 <body>
   <!-- Boot splash (your E.V. logo) -->
@@ -105,6 +106,9 @@
       </form>
     </section>
   </div>
+
+  <!-- F.R.I.D.A.Y.'s workspace (route #/friday) — filled by js/friday.js -->
+  <div class="friday hidden" id="friday-root" aria-label="F.R.I.D.A.Y. workspace"></div>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>
   <script type="module" src="/static/js/app.js"></script>

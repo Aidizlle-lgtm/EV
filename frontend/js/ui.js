@@ -71,6 +71,11 @@ const P = {
   browser: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/>',
   system: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
   chart: '<path d="M4 20V4M4 20h16M7 15l4-4 3 3 5-6"/>',
+  candles: '<path d="M6 3v4M6 15v6M12 2v3M12 13v9M18 6v3M18 17v4"/><rect x="4" y="7" width="4" height="8" rx="0.5"/><rect x="10" y="5" width="4" height="8" rx="0.5"/><rect x="16" y="9" width="4" height="8" rx="0.5"/>',
+  pie: '<path d="M12 3a9 9 0 1 0 9 9h-9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/>',
+  flask: '<path d="M9 3h6M10 3v6l-5.5 9.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.5-2.5L14 9V3M7.5 15h9"/>',
+  journal: '<rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M9 7h6M9 11h6M9 15h4M3 7h3M3 12h3M3 17h3"/>',
+  doc: '<path d="M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6"/>',
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6"/>',
 };
