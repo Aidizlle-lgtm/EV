@@ -29,6 +29,9 @@ def fresh_db(tmp_path, monkeypatch):
     (tmp_path / "uploads").mkdir()
     (tmp_path / "backups").mkdir()
     db.init()
+    from backend.services import connections, routing
+    routing.reset_cooldowns()          # rate-limit cooldowns are process-wide; isolate tests
+    connections._cache.clear()
     yield
 
 

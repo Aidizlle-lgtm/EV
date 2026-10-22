@@ -51,7 +51,13 @@ DEFAULTS: dict[str, Any] = {
     # Live feed / background insights
     "feed.enabled": True,
     "feed.cpu_alert_percent": 90,
+    # Market data for F.R.I.D.A.Y. — separate from AI connections. "test" = clearly
+    # labelled synthetic data (no live source is connected yet); "none" = off.
+    "market_data.source": "test",
 }
+
+# Per-agent model routing: agents.<agent_id>.connection | .model | .fallbacks
+AGENT_KEY_RE = re.compile(r"^agents\.[a-z0-9_]{1,30}\.(connection|model|fallbacks)$")
 
 # Model chosen per provider is stored under "llm.model.<provider>".
 DEFAULT_MODELS = {
@@ -71,11 +77,12 @@ CHOICES = {
     "voice.tts": {"auto", "elevenlabs", "browser", "off"},
     "voice.stt": {"auto", "groq", "browser"},
     "weather.units": {"celsius", "fahrenheit"},
+    "market_data.source": {"test", "none"},
 }
 
 
 def _valid_key(key: str) -> bool:
-    return key in DEFAULTS or (key.startswith("llm.model.") and key[10:] in DEFAULT_MODELS)
+    return key in DEFAULTS or (key.startswith("llm.model.") and key[10:] in DEFAULT_MODELS) or bool(AGENT_KEY_RE.match(key))
 
 
 def get(key: str) -> Any:
@@ -84,6 +91,8 @@ def get(key: str) -> Any:
         return db.loads(stored["value"])
     if key.startswith("llm.model."):
         return DEFAULT_MODELS.get(key[10:], "")
+    if AGENT_KEY_RE.match(key):
+        return [] if key.endswith(".fallbacks") else ""
     return DEFAULTS.get(key)
 
 
@@ -94,6 +103,15 @@ def put(key: str, value: Any) -> None:
         raise ValueError("Fire TV address must be an IP like 192.168.1.40 (optionally :5555)")
     if key in ("tools.disabled", "tools.auto_approve") and not (isinstance(value, list) and all(isinstance(v, str) for v in value)):
         raise ValueError(f"{key} must be a list of tool names")
+    if AGENT_KEY_RE.match(key):
+        if key.endswith(".fallbacks"):
+            ok = isinstance(value, list) and len(value) <= 4 and all(
+                isinstance(f, dict) and set(f) <= {"connection", "model"} and isinstance(f.get("connection"), str)
+                and isinstance(f.get("model", ""), str) and len(f.get("model", "")) <= 200 for f in value)
+            if not ok:
+                raise ValueError("Fallbacks must be a list of up to 4 {connection, model} entries")
+        elif not isinstance(value, str) or len(value) > 200:
+            raise ValueError(f"{key} must be text")
     if key in CHOICES and value not in CHOICES[key]:
         raise ValueError(f"{key} must be one of {sorted(CHOICES[key])}")
     default = DEFAULTS.get(key)

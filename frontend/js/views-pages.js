@@ -20,7 +20,7 @@ export function renderCore(view) {
   const wrap = h("div", { class: "stack" });
   view.replaceChildren(head("AI Core", "Choose which AI model E.V. thinks with, and tune its personality. Keys stay in your local .env file and are never shown again."), wrap);
   const load = async () => {
-    const [provs, cfg] = await Promise.all([api("/api/providers"), api("/api/settings")]);
+    const [provs, cfg, conns, agentList] = await Promise.all([api("/api/providers"), api("/api/settings"), api("/api/connections"), api("/api/agents")]);
     const s = cfg.settings;
     const cards = provs.map((p) => {
       const model = p.models.length
@@ -53,6 +53,8 @@ export function renderCore(view) {
     wrap.replaceChildren(
       h("div", { class: "callout info" }, "Claude Code, Cursor, and Copilot are development tools — they don't give E.V. runtime API access. E.V. talks to models only through the providers below, using your own keys."),
       h("div", { class: "grid-2" }, ...cards),
+      connectionsPanel(conns, load),
+      routingPanel(agentList, conns.connections, load),
       panel("Personality", h("div", { class: "stack" },
         h("div", { class: "form-grid" }, field("Preferred name", name), field("Title shown under your name", title), field("Wit", wit), field("Verbosity", verb)),
         field("Your instructions for E.V.", custom),
@@ -65,15 +67,118 @@ export function renderCore(view) {
   load().catch((e) => wrap.replaceChildren(h("div", { class: "empty" }, e.message)));
 }
 
+// ------------------------------------------------------------------ AI connections (several keys per provider)
+const VERIFY = { mock_tested: "adapter tested with simulated responses", docs_checked: "endpoint taken from provider docs — untested by E.V.", needs_adapter: "not supported yet" };
+
+function connectionsPanel({ connections, presets }, reload) {
+  const supported = presets.filter((p) => p.supported);
+  const name = h("input", { type: "text", maxlength: 60, placeholder: "e.g. OpenAI — school key" });
+  const preset = h("select", { "aria-label": "Provider" }, supported.map((p) => h("option", { value: p.id }, p.label)));
+  const baseUrl = h("input", { type: "text", maxlength: 300, placeholder: "https://…/v1" });
+  const key = h("input", { type: "password", autocomplete: "off", placeholder: "Paste the API key" });
+  const model = h("input", { type: "text", maxlength: 200, placeholder: "model id (or Test later to pick)" });
+  const note = h("p", { class: "small muted", style: { margin: "4px 0 0" } });
+  const sync = () => {
+    const p = supported.find((x) => x.id === preset.value);
+    baseUrl.disabled = !(p.custom_base_url || p.adapter === "anthropic");
+    baseUrl.placeholder = p.base_url || (p.custom_base_url ? "required — https://host/v1" : "fixed by the provider");
+    key.placeholder = p.key_required ? "Paste the API key" : "API key (optional for this provider)";
+    note.textContent = `${VERIFY[p.verification]}${p.notes ? ` · ${p.notes}` : ""}`;
+  };
+  preset.onchange = sync; sync();
+  const add = async (e) => {
+    e.preventDefault();
+    const body = { name: name.value.trim(), preset: preset.value, default_model: model.value.trim() };
+    if (!baseUrl.disabled && baseUrl.value.trim()) body.base_url = baseUrl.value.trim();
+    if (key.value.trim()) body.api_key = key.value.trim();
+    if (await guard(() => post("/api/connections", body), "Connection saved. The key is stored only in your .env file.")) { key.value = ""; name.value = ""; reload(); }
+  };
+  const custom = connections.filter((c) => !c.builtin);
+  const rows = custom.map((c) => {
+    const m = c.models.length
+      ? h("select", { "aria-label": `${c.name} model` }, [h("option", { value: "" }, "— choose —"), ...c.models.map((x) => h("option", { value: x, selected: x === c.default_model }, x))])
+      : h("input", { type: "text", value: c.default_model || "", placeholder: "model id", "aria-label": `${c.name} model` });
+    const newKey = h("input", { type: "password", autocomplete: "off", placeholder: c.key_hint ? `Saved ${c.key_hint} — paste to replace` : "Paste API key" });
+    return h("div", { class: "panel", style: { margin: 0 } },
+      h("div", { class: "panel-head" }, h("h2", { class: "panel-title" }, c.name), h("span", { class: "chip" }, c.preset_label),
+        statusChip(c.configured ? "configured" : "setup_required", c.configured ? "Key saved" : "Needs a key")),
+      h("p", { class: "small muted", style: { margin: "0 0 6px" } }, `id: ${c.id}${c.base_url ? ` · ${c.base_url}` : ""} · ${VERIFY[c.verification] || ""}`),
+      h("div", { class: "form-grid" }, field("Default model", m), field("API key", newKey)),
+      h("div", { class: "inline", style: { marginTop: "8px" } },
+        h("button", { class: "btn sm blue", onclick: async (e) => { e.target.disabled = true; const r = await guard(() => post(`/api/connections/${c.id}/test`)); if (r?.error) toast(r.error, "err"); else if (r) toast(`${c.name}: ${r.detail}`, "ok"); reload(); } }, icon("refresh"), "Test & load models"),
+        h("button", { class: "btn sm", onclick: async () => { const body = { default_model: m.value.trim() }; if (newKey.value.trim()) body.api_key = newKey.value.trim(); if (await guard(() => patch(`/api/connections/${c.id}`, body), "Saved.")) reload(); } }, icon("check"), "Save"),
+        h("button", { class: "btn sm ghost", onclick: async () => { if (await confirmDialog("Delete connection", `Delete “${c.name}” and remove its key from this computer? Agents using it will go back to inheriting.`, "Delete")) { await guard(() => del(`/api/connections/${c.id}`), "Deleted."); reload(); } } }, icon("trash"), "Delete")));
+  });
+  const unsupported = presets.filter((p) => !p.supported);
+  return panel("Connections — several providers, several keys", h("div", { class: "stack" },
+    h("p", { class: "small muted", style: { margin: 0 } }, "A connection is a provider + your own key + model settings. Add as many as you like (even two keys for the same provider) and assign them to E.V. and each specialist below. The provider cards above are built-in connections and can be assigned too. Extra keys are for separating usage — after a rate limit, E.V. never switches to another key from the same provider."),
+    h("form", { class: "stack", onsubmit: add },
+      h("div", { class: "form-grid" }, field("Name", name), field("Provider", preset), field("Base URL", baseUrl), field("API key", key), field("Default model", model)),
+      note, h("div", {}, h("button", { class: "btn primary", type: "submit" }, icon("plus"), "Add connection"))),
+    rows.length ? h("div", { class: "grid-2" }, ...rows) : h("div", { class: "empty" }, "No extra connections yet."),
+    unsupported.length ? h("p", { class: "small muted", style: { margin: 0 } }, "Not supported yet (need their own adapter): ", unsupported.map((p) => p.label).join(", "), ".") : null));
+}
+
+function routingPanel(agentList, connections, reload) {
+  const routable = agentList.filter((a) => a.routing);
+  const connOptions = (sel, inheritLabel) => [h("option", { value: "" }, inheritLabel), ...connections.map((c) => h("option", { value: c.id, selected: c.id === sel }, `${c.name}${c.builtin ? " (built-in)" : ""}`))];
+  const modelsFor = (cid) => connections.find((c) => c.id === cid)?.models || [];
+  const rows = routable.map((a) => {
+    const r = a.routing;
+    const listId = `models-${a.id}`;
+    const dl = h("datalist", { id: listId });
+    const conn = h("select", { "aria-label": `${a.name} connection` }, connOptions(r.connection, a.id === "ev" ? "Active provider in AI Core (current setup)" : "Same as E.V."));
+    const model = h("input", { type: "text", value: r.model, list: listId, placeholder: "connection's default model", "aria-label": `${a.name} model` });
+    const fbs = [0, 1].map((i) => {
+      const f = r.fallbacks[i] || {};
+      return { conn: h("select", { "aria-label": `${a.name} fallback ${i + 1}` }, connOptions(f.connection, "— none —")),
+               model: h("input", { type: "text", value: f.model || "", placeholder: "default model", "aria-label": `${a.name} fallback ${i + 1} model` }) };
+    });
+    const fillModels = () => dl.replaceChildren(...modelsFor(conn.value).map((m) => h("option", { value: m })));
+    conn.onchange = fillModels; fillModels();
+    const save = async () => {
+      const body = { connection: conn.value, model: model.value.trim(),
+        fallbacks: fbs.filter((f) => f.conn.value).map((f) => ({ connection: f.conn.value, model: f.model.value.trim() })) };
+      if (await guard(() => put(`/api/agents/${a.id}/routing`, body), `${a.name} model saved.`)) reload();
+    };
+    return h("div", { class: "stack", style: { borderTop: "1px solid var(--border)", paddingTop: "10px" } },
+      h("div", { class: "inline" }, h("b", {}, a.name), h("span", { class: "small muted" }, "→ " + r.effective.map((e) => `${e.label} · ${e.model || "no model"}${e.cooling_down_s ? ` (cooling down ${e.cooling_down_s}s)` : ""}`).join("  ⟶  "))),
+      h("div", { class: "route-row" }, field("Connection", conn), field("Model", model), h("span")), dl,
+      ...fbs.map((f, i) => h("div", { class: "route-row" }, field(`Fallback ${i + 1}`, f.conn), field("Model", f.model), h("span"))),
+      h("div", {}, h("button", { class: "btn sm primary", onclick: save }, icon("check"), `Save ${a.name}`)));
+  });
+  return panel("Agent models", h("div", { class: "stack" },
+    h("p", { class: "small muted", style: { margin: 0 } }, "Choose the connection and model each agent thinks with. One connection can serve several agents. Fallbacks are tried in order when the main one is down or rate-limited (never another key from a rate-limited provider). E.V.'s modes (Coding, Research…) use E.V.'s setting."),
+    ...rows));
+}
+
 // ------------------------------------------------------------------ Agents
 export function renderAgents(view) {
   const grid = h("div", { class: "grid-3" });
-  view.replaceChildren(head("Agents", "Focused modes of E.V. Each one only gets the tools listed — enforced by the backend."), grid);
-  api("/api/agents").then((agents) => grid.replaceChildren(...agents.map((a) => h("div", { class: "panel" },
-    h("div", { class: "panel-head" }, h("h2", { class: "panel-title" }, a.name), statusChip(a.status, a.detail)),
-    h("p", { class: "muted" }, a.detail),
-    h("p", { class: "small" }, a.tools === null ? "All tools" : a.tools.length ? a.tools.join(", ") : "No tools"),
-    a.status !== "not_implemented" ? h("button", { class: "btn sm primary", onclick: () => openChat({ agent: a.id }) }, icon("chat"), "Open chat") : null)))).catch((e) => toast(e.message, "err"));
+  view.replaceChildren(head("Agents", "E.V. is the hub. Modes are focused versions of E.V.; specialists are separate agents she delegates to. Tool lists, permission levels, memory access, and limits are enforced by the backend — prompt files only set personality and behaviour."), grid);
+  const load = () => api("/api/agents").then((agents) => grid.replaceChildren(...agents.map((a) => agentCard(a, load)))).catch((e) => toast(e.message, "err"));
+  load();
+}
+
+function agentCard(a, reload) {
+  const kindLabel = { orchestrator: "Central hub", mode: "Mode of E.V.", specialist: "Specialist" }[a.kind] || a.kind;
+  const route = a.routing ? a.routing.effective.map((e) => `${e.label} · ${e.model || "no model"}`).join(" → ") : null;
+  const md = a.market_data;
+  return h("div", { class: "panel" },
+    h("div", { class: "panel-head" }, h("h2", { class: "panel-title" }, a.name), h("span", { class: "chip" }, kindLabel), statusChip(a.status, a.detail)),
+    h("p", { class: "muted" }, a.policy?.domain || a.detail),
+    a.prompt ? h("p", { class: "small" }, statusChip(a.prompt.status, a.prompt.detail), " ", h("code", {}, a.prompt.file), a.prompt.status === "temporary" ? " — replace with your own" : "") : null,
+    route ? h("p", { class: "small" }, icon("cpu"), " ", route, a.routing.inherits && a.kind === "specialist" ? " (same as E.V.)" : "") : null,
+    h("p", { class: "small" }, a.tools === null ? "All tools (except specialist-only)" : a.tools.length ? a.tools.join(", ") : "No tools"),
+    a.policy ? h("p", { class: "small muted" }, `Max level: ${a.policy.max_level} · ${a.policy.max_steps} steps · ${Math.round(a.policy.timeout_s)}s limit · memory: ${a.policy.memory} · can't delegate`) : null,
+    md ? h("div", { class: md.is_live ? "callout info" : "callout" },
+      h("b", {}, "Market data: "), md.label,
+      md.data_status === "TEST_DATA" ? h("div", { class: "small" }, "Every figure F.R.I.D.A.Y. sees is synthetic and labelled TEST DATA. No live source is connected yet — your AI keys don't include market data.") : null,
+      h("div", { class: "inline", style: { marginTop: "6px" } }, h("select", { "aria-label": "Market data source", onchange: async (e) => { await guard(() => patch("/api/settings", { "market_data.source": e.target.value }), "Saved."); reload(); } },
+        [...md.available.map((x) => h("option", { value: x.id, selected: md.source === x.id }, x.is_live ? x.label : "Test data (synthetic)")), h("option", { value: "none", selected: md.source === "none" }, "Off")])),
+      h("div", { class: "small muted", style: { marginTop: "4px" } }, "Live sources that could be added: ", md.options.map((o) => `${o.name} (${o.credential})`).join(" · "))) : null,
+    a.kind === "specialist" ? h("p", { class: "small muted" }, "Ask E.V. — she delegates to this specialist and explains the report.")
+      : a.status !== "not_implemented" ? h("button", { class: "btn sm primary", onclick: () => openChat({ agent: a.id }) }, icon("chat"), "Open chat") : null);
 }
 
 // ------------------------------------------------------------------ Tasks
@@ -151,6 +256,8 @@ export function renderMemory(view) {
   const list = h("div", { class: "stack" });
   const content = h("input", { type: "text", maxlength: 1000, placeholder: "e.g. Prefers metric units" });
   const cat = h("input", { type: "text", maxlength: 40, value: "preferences", list: "mem-cats" });
+  const scope = h("select", { "aria-label": "Who can read it" }, h("option", { value: "shared" }, "Shared (E.V.; specialists by category)"));
+  api("/api/agents").then((ags) => ags.filter((a) => a.kind === "specialist").forEach((a) => scope.append(h("option", { value: a.id }, `${a.name} only (and E.V.)`)))).catch(() => {});
   const q = h("input", { type: "search", placeholder: "Search memories" });
   const file = h("input", { type: "file", accept: "application/json", class: "hidden", onchange: () => importFile(file) });
   view.replaceChildren(
@@ -161,8 +268,8 @@ export function renderMemory(view) {
       panel("Add a memory", h("form", { class: "form-grid", onsubmit: async (e) => {
         e.preventDefault();
         if (!content.value.trim()) return;
-        if (await guard(() => post("/api/memories", { content: content.value.trim(), category: cat.value.trim() || "general" }), "Saved.")) { content.value = ""; load(); changed(); }
-      } }, field("Fact or preference", content), field("Category", cat), h("button", { class: "btn primary", type: "submit" }, icon("plus"), "Save"))),
+        if (await guard(() => post("/api/memories", { content: content.value.trim(), category: cat.value.trim() || "general", scope: scope.value }), "Saved.")) { content.value = ""; load(); changed(); }
+      } }, field("Fact or preference", content), field("Category", cat), field("Who can read it", scope), h("button", { class: "btn primary", type: "submit" }, icon("plus"), "Save"))),
       panel("Saved memories", h("div", { class: "stack" }, q, list))));
   q.addEventListener("input", () => load());
   const load = async () => {
@@ -174,7 +281,7 @@ export function renderMemory(view) {
     list.replaceChildren(...(mems.length ? Object.entries(groups).map(([c, ms]) => h("div", {},
       h("div", { class: "panel-title", style: { fontSize: "13px", margin: "2px 0 6px" } }, `${c} (${ms.length})`),
       h("div", { class: "rows" }, ms.map((m) => h("div", { class: "row" },
-        h("div", { class: "grow" }, h("div", { style: { whiteSpace: "normal" } }, m.content), h("div", { class: "s" }, `M${m.id} · ${m.source === "assistant" ? "proposed by E.V., approved by you" : "added by you"} · ${relTime(m.updated_at)}`)),
+        h("div", { class: "grow" }, h("div", { style: { whiteSpace: "normal" } }, m.content), h("div", { class: "s" }, `M${m.id} · ${m.scope && m.scope !== "shared" ? `only ${m.scope} + E.V. · ` : ""}${m.source === "assistant" ? "proposed by E.V., approved by you" : "added by you"} · ${relTime(m.updated_at)}`)),
         h("button", { class: "icon-btn", "aria-label": "Edit memory", onclick: () => editMemory(m, load) }, icon("edit")),
         h("button", { class: "icon-btn", "aria-label": "Delete memory", onclick: async () => { if (await confirmDialog("Forget this?", m.content, "Delete")) { await guard(() => del(`/api/memories/${m.id}`), "Forgotten."); load(); changed(); } } }, icon("trash")))))))
       : [h("div", { class: "empty" }, q.value ? "No matches." : "No memories yet. Add one above, or tell E.V. “remember that…”.")]));
@@ -184,7 +291,7 @@ export function renderMemory(view) {
     if (!f) return;
     try {
       const data = JSON.parse(await f.text());
-      const memories = (data.memories || data).map((m) => ({ content: m.content, category: m.category || "general" })).filter((m) => m.content);
+      const memories = (data.memories || data).map((m) => ({ content: m.content, category: m.category || "general", scope: m.scope || "shared" })).filter((m) => m.content);
       if (!(await confirmDialog("Import memories", `Add ${memories.length} memories from ${f.name}?`, "Import", false))) return;
       const r = await post("/api/memories/import", { memories });
       toast(`Imported ${r.imported}.`, "ok"); load(); changed();

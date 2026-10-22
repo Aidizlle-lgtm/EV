@@ -70,6 +70,8 @@ const P = {
   speaker: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>',
   browser: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/>',
   system: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
+  chart: '<path d="M4 20V4M4 20h16M7 15l4-4 3 3 5-6"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6"/>',
 };
 
@@ -150,6 +152,8 @@ export function toLocalInput(iso) {
 export const STATUS_LABEL = {
   connected: "Connected", configured: "Configured", setup_required: "Setup required", error: "Error",
   not_implemented: "Not built yet", ready: "Ready", running: "Running", ok: "OK",
+  temporary: "Temporary prompt", starter: "Starter prompt", custom: "Your prompt", missing: "Prompt missing", empty: "Prompt empty",
+  too_long: "Prompt truncated",
 };
 
 // ---------- safe markdown (escape first, then format) ----------

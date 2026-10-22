@@ -17,6 +17,8 @@ from . import auth, config, db
 from .routes import auth_routes, chat_routes, data_routes, system_routes
 from .services import jobs
 from .tools import builtin  # noqa: F401 - registers the built-in tools
+from .tools import market  # noqa: F401 - registers F.R.I.D.A.Y.'s read-only market-data tools
+from .services import delegation  # noqa: F401 - registers E.V.'s delegate_to_specialist tool
 
 log = logging.getLogger("ev")
 

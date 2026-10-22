@@ -91,12 +91,14 @@ def _retry_after(headers: httpx.Headers) -> float | None:
 
 class OpenAICompatProvider(Provider):
     def __init__(self, pid: str, label: str, base_url: str | None, key_env: str | None,
-                 extra_headers: dict[str, str] | None = None):
+                 extra_headers: dict[str, str] | None = None, setup_hint: str | None = None):
         self.id = pid
         self.label = label
         self._base_url = base_url
         self.needs_key = key_env
         self.extra_headers = extra_headers or {}
+        # Where to fix a missing key. Never contains the key itself.
+        self.setup_hint = setup_hint or (f"add {key_env} in Settings → Integrations" if key_env else "")
 
     # -- configuration -------------------------------------------------
     @property
@@ -113,7 +115,7 @@ class OpenAICompatProvider(Provider):
         if self.needs_key:
             key = config.get_secret(self.needs_key)
             if not key:
-                raise ProviderError("setup", f"{self.label} is not set up yet: add {self.needs_key} in Settings → Integrations.", provider=self.id)
+                raise ProviderError("setup", f"{self.label} is not set up yet: {self.setup_hint}.", provider=self.id)
             h["Authorization"] = f"Bearer {key}"
         return h
 

@@ -53,9 +53,14 @@ class ToolError(Exception):
 
 @dataclass
 class ToolContext:
-    actor: str = "assistant"            # assistant | job | user
+    actor: str = "assistant"            # assistant | job | user | agent:<id>
     conversation_id: int | None = None
-    max_level: Level | None = None      # background jobs are capped at PREPARE
+    max_level: Level | None = None      # background jobs are capped at PREPARE; specialists at READ
+    agent: str = "ev"                   # whose policy applies (memory visibility, delegation rights)
+    depth: int = 0                      # 0 = E.V.'s own turn; 1 = inside a specialist
+    cancel: Any = None                  # asyncio.Event set when the user presses Stop
+    emit: Callable[[dict[str, Any]], None] | None = None   # progress events for the interface
+    run_state: dict[str, Any] = field(default_factory=dict)  # per-reply counters (e.g. delegations)
 
 
 @dataclass

@@ -137,7 +137,7 @@ class SearchMemoriesArgs(BaseModel):
 @tool("search_memories", level=Level.READ, args=SearchMemoriesArgs, category="memory",
       description="Search the user's saved (approved) memories.")
 def search_memories(a: SearchMemoriesArgs, ctx: ToolContext):
-    return {"memories": data.list_memories(a.query)}
+    return {"memories": data.list_memories(a.query, visible_to=ctx.agent)}
 
 
 class SaveMemoryArgs(BaseModel):

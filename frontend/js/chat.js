@@ -38,7 +38,8 @@ export async function loadAgents() {
   try {
     const agents = await api("/api/agents");
     const sel = $("chat-agent");
-    sel.replaceChildren(...agents.map((a) => h("option", { value: a.id, disabled: a.status === "not_implemented" },
+    // Specialists (F.R.I.D.A.Y. …) aren't chatted with directly: E.V. delegates to them.
+    sel.replaceChildren(...agents.filter((a) => a.kind !== "specialist").map((a) => h("option", { value: a.id, disabled: a.status === "not_implemented" },
       a.status === "not_implemented" ? `${a.name} (not built yet)` : a.name)));
     sel.value = S.agent;
   } catch { /* shown elsewhere */ }
@@ -112,6 +113,41 @@ function assistantBubble(text, status = "complete") {
 }
 
 const CHIP_ICON = { ok: "check", running: "refresh", awaiting: "shield", denied: "x", expired: "x", cancelled: "x", error: "warn", invalid: "warn", timeout: "warn", unavailable: "lock" };
+// ---------- delegation (E.V. → specialist) ----------
+function delegationBox(agentName, task) {
+  return h("div", { class: "deleg" },
+    h("div", { class: "deleg-head" }, icon("bot"), h("b", {}, `E.V. → ${agentName}`), h("span", { class: "deleg-state" }, "working…")),
+    task ? h("div", { class: "deleg-task" }, task) : null,
+    h("ul", { class: "deleg-steps" }));
+}
+
+function updateDelegation(box, ev) {
+  const state = box.querySelector(".deleg-state");
+  const steps = box.querySelector(".deleg-steps");
+  const argText = (a) => Object.values(a || {}).filter((v) => typeof v === "string" || typeof v === "number").join(" ");
+  if (ev.event === "tool") steps.append(h("li", { "data-tool": ev.name }, h("code", {}, ev.name), " ", argText(ev.args), h("span", { class: "s" }, " …")));
+  else if (ev.event === "tool_done") {
+    const li = [...steps.querySelectorAll(`li[data-tool="${ev.name}"]`)].find((x) => !x.dataset.done);
+    if (li) { li.dataset.done = "1"; li.querySelector(".s").textContent = ev.status === "ok" ? " ✓" : ` — ${ev.status}`; }
+  } else if (ev.event === "fallback") steps.append(h("li", { class: "s" }, `${ev.from} unavailable — using its fallback`));
+  else if (ev.stage === "finished") state.textContent = ev.status === "completed" ? "report ready" : "stopped at step limit";
+  else if (ev.stage === "timeout") state.textContent = "timed out";
+  else if (ev.stage === "cancelled") state.textContent = "stopped";
+  else if (ev.stage === "error") state.textContent = "couldn't reach its AI model";
+}
+
+const DATA_BADGE = { TEST_DATA: ["TEST DATA — not real", "warn"], NONE: ["No market data", "warn"], LIVE: ["Live data", "ok"], MIXED: ["Delayed / mixed data", "warn"] };
+
+function reportCard(r) {
+  const [label, tone] = DATA_BADGE[r.data_status] || [r.data_status || "unknown", "warn"];
+  return h("div", { class: "report-card" },
+    h("div", { class: "deleg-head" }, icon("chart"), h("b", {}, `${r.agent_name} report`),
+      h("span", { class: `data-badge ${tone}` }, label), r.confidence ? h("span", { class: "chip" }, `confidence: ${r.confidence}`) : null),
+    r.data_notice ? h("div", { class: "data-notice" }, r.data_notice) : null,
+    r.summary ? h("div", { class: "report-summary" }, r.summary) : null,
+    r.sources?.length ? h("div", { class: "s" }, "Sources: ", r.sources.map((x) => `${x.source} (${x.is_live ? "live" : "not live"}, ${x.as_of || "no timestamp"})`).filter((v, i, a) => a.indexOf(v) === i).join("; ")) : null);
+}
+
 function toolChip(name, status, summary) {
   return h("div", { class: `tool-chip st-${status}` }, icon(CHIP_ICON[status] || "tools"), h("span", { class: "nm" }, name),
     h("span", { class: "sm" }, status === "running" ? "running…" : summary || status));
@@ -173,7 +209,7 @@ export async function send(raw, { voiceReply = false } = {}) {
   const thinking = h("div", { class: "thinking" }, h("i"), h("i"), h("i"), "Thinking");
   log.append(thinking);
   scroll();
-  S.bubble = null; S.bubbleText = ""; S.lastText = ""; S.chips = {};
+  S.bubble = null; S.bubbleText = ""; S.lastText = ""; S.chips = {}; S.deleg = {};
   S.ctrl = new AbortController();
   setBusy(true);
   let renderQueued = false;
@@ -214,9 +250,26 @@ export async function send(raw, { voiceReply = false } = {}) {
         if (card) markResolved(card, ev.decision);
         break;
       }
+      case "agent_progress": {
+        thinking.remove();
+        let box = S.deleg?.[ev.agent];
+        if (!box || ev.stage === "started") {
+          box = delegationBox(ev.agent_name, ev.task);
+          S.deleg = { ...(S.deleg || {}), [ev.agent]: box };
+          log.append(box);
+        }
+        updateDelegation(box, ev);
+        scroll();
+        break;
+      }
       case "tool_result": {
         const chip = toolChip(ev.name, ev.status, ev.summary);
         S.chips[ev.id]?.replaceWith(chip); S.chips[ev.id] = chip;
+        if (ev.report) { log.append(reportCard(ev.report)); }
+        if (ev.name === "delegate_to_specialist" && ev.status !== "ok") {
+          const box = Object.values(S.deleg || {}).at(-1);
+          if (box) box.querySelector(".deleg-state").textContent = ev.status;
+        }
         const resolved = S.cards?.[ev.id]?.querySelector(".resolved");
         if (resolved && ev.status === "ok") resolved.textContent = "Approved — done.";
         else if (resolved && ["error", "timeout", "unavailable", "invalid"].includes(ev.status)) { resolved.textContent = `Approved, but it failed: ${ev.summary}`; resolved.className = "resolved st-error"; }

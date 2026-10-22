@@ -35,14 +35,17 @@ def _safe_id(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", value or "") or "toolu_unknown"
 
 
-def to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def to_anthropic_messages(messages: list[dict[str, Any]], replay_ids: frozenset[str] | set[str] = frozenset({"anthropic"})) -> list[dict[str, Any]]:
+    """`replay_ids`: provider/connection ids whose stored native blocks (including
+    thinking) may be replayed verbatim. Turns from any other connection — even
+    another Claude key — are rebuilt from plain text and tool calls instead."""
     out: list[dict[str, Any]] = []
     for m in messages:
         role = m["role"]
         if role == "user":
             out.append({"role": "user", "content": [{"type": "text", "text": m["content"] or "(empty)"}]})
         elif role == "assistant":
-            if m.get("provider") == "anthropic" and isinstance(m.get("raw"), list) and m["raw"]:
+            if m.get("provider") in replay_ids and isinstance(m.get("raw"), list) and m["raw"]:
                 out.append({"role": "assistant", "content": m["raw"]})
                 continue
             blocks: list[dict[str, Any]] = []
@@ -64,9 +67,13 @@ def to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 class AnthropicProvider(Provider):
-    id = "anthropic"
-    label = "Anthropic Claude"
-    needs_key = "ANTHROPIC_API_KEY"
+    def __init__(self, pid: str = "anthropic", label: str = "Anthropic Claude", key_env: str = "ANTHROPIC_API_KEY",
+                 base_url: str | None = None, setup_hint: str | None = None):
+        self.id = pid
+        self.label = label
+        self.needs_key = key_env
+        self.base_url = base_url or None
+        self.setup_hint = setup_hint or f"add {key_env} in Settings → Integrations"
 
     def configured(self) -> bool:
         return bool(config.get_secret(self.needs_key))
@@ -74,8 +81,11 @@ class AnthropicProvider(Provider):
     def _client(self) -> anthropic.AsyncAnthropic:
         key = config.get_secret(self.needs_key)
         if not key:
-            raise ProviderError("setup", "Claude is not set up yet: add ANTHROPIC_API_KEY in Settings → Integrations.", provider=self.id)
-        return anthropic.AsyncAnthropic(api_key=key, max_retries=2, timeout=anthropic.Timeout(600.0, connect=10.0))
+            raise ProviderError("setup", f"{self.label} is not set up yet: {self.setup_hint}.", provider=self.id)
+        kw: dict[str, Any] = {"api_key": key, "max_retries": 2, "timeout": anthropic.Timeout(600.0, connect=10.0)}
+        if self.base_url:
+            kw["base_url"] = self.base_url
+        return anthropic.AsyncAnthropic(**kw)
 
     def _map_error(self, e: Exception) -> ProviderError:
         if isinstance(e, anthropic.APIConnectionError):  # includes APITimeoutError
@@ -103,7 +113,7 @@ class AnthropicProvider(Provider):
             "model": model,
             "max_tokens": MAX_TOKENS,
             "system": system,
-            "messages": to_anthropic_messages(messages),
+            "messages": to_anthropic_messages(messages, frozenset({self.id})),
         }
         if tools:
             kwargs["tools"] = [

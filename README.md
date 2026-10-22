@@ -31,7 +31,7 @@ E.V. is a personal AI assistant that runs on your Windows laptop and opens in yo
 | Reading files and creating files on your laptop | ⚙️ Setup required | Folders you authorize |
 | Google Calendar sync, Gmail inbox, web search, browser automation, calls/SMS, purchases and bookings | 🚧 Planned, not built | The app labels these "Not built yet" |
 
-**Note on testing:** All 56 automated tests pass. I also ran full browser walkthroughs: first-run setup, streamed chat, a tool call, the approval card, approving it, and the task being created, at both desktop and phone sizes; plus "Pause the TV" through to the ADB command, using a stand-in for `adb` because no Fire TV is reachable from my build environment. **However, my build environment's network blocks Groq, ElevenLabs, and Open-Meteo**, so I tested those integrations against simulated (mocked) APIs, not the real services. The first real call happens on your laptop. The **Test** buttons in the app check each integration and report the result.
+**Note on testing:** All 90 automated tests pass. I also ran full browser walkthroughs: first-run setup, streamed chat, a tool call, the approval card, approving it, and the task being created, at both desktop and phone sizes; plus "Pause the TV" through to the ADB command, using a stand-in for `adb` because no Fire TV is reachable from my build environment. **However, my build environment's network blocks Groq, ElevenLabs, and Open-Meteo**, so I tested those integrations against simulated (mocked) APIs, not the real services. The first real call happens on your laptop. The **Test** buttons in the app check each integration and report the result.
 
 ---
 
@@ -136,6 +136,71 @@ Now you can say things like *"pause the TV"*, *"turn the volume up three"*, *"op
 
 ---
 
+## Multi-agent: E.V. + specialists (milestone 1: F.R.I.D.A.Y.)
+
+You talk to E.V. When a request needs a specialist, she calls `delegate_to_specialist`. The specialist works with its own tools and AI connection, then returns a structured report. E.V. explains that report to you, and the chat shows each step live (**E.V. → F.R.I.D.A.Y.**), followed by a report card.
+
+| Piece | Status |
+|---|---|
+| Hub-and-spoke delegation (E.V. → specialist → report → E.V.) | ✅ Built and tested with simulated AI responses |
+| **F.R.I.D.A.Y.** — stock research: quote, company overview, price history, news | ✅ Built. **Market data is TEST DATA only** (see below) |
+| Per-agent AI connection, model, and fallbacks | ✅ AI Core → **Agent models** |
+| Several providers and several keys per provider | ✅ AI Core → **Connections** |
+| Your own prompt files for each agent | ✅ `prompts/` (see `prompts/README.md`) |
+| Memory scopes: shared vs. specialist-only | ✅ Memory page → "Who can read it" |
+| J.A.R.V.I.S. and the other specialists | 🚧 Next milestone |
+| Per-agent voices, agent-to-agent messaging, ULTRON review | 🚧 Later phases |
+
+### Enforced in code (prompt files can't change these)
+- **Tools.** Each agent's tool list is fixed in `backend/services/agents.py`. If the AI calls a tool that isn't on its agent's list, the call is refused and logged. E.V. can't call F.R.I.D.A.Y.'s market tools directly; she has to delegate.
+- **Permission level.** F.R.I.D.A.Y. is capped at **Read**. She can't create, send, delete, buy, or trade anything. If a specialist hits a tool that needs your approval, the tool is refused, and she can only *propose* the action in her report.
+- **Delegation limits.** At most 3 delegations per reply. Specialists can't delegate further, and background workflows can't delegate.
+- **Execution limits.** F.R.I.D.A.Y. gets 6 model steps and 150 seconds per task. **Stop** cancels her mid-task.
+- **Memory.** F.R.I.D.A.Y. sees only memories scoped to her, plus shared memories in the `finance` and `investing` categories. Health and other personal notes stay with E.V.
+- **Data labels.** The data status (TEST_DATA / LIVE / NONE) and each data source's timestamp are taken by the code from the actual tool results. The AI can't change them, and E.V. is told to pass the notice on.
+
+### Market data is separate from AI keys
+An AI provider key (Groq, Claude, OpenAI…) doesn't give you live stock prices or financial news. Market data needs its own source, chosen in **Agents → F.R.I.D.A.Y. → Market data**.
+
+**No live market-data source is connected yet.** The only source is a built-in **test-data generator**, and everything it produces is labelled:
+- every value is marked `TEST_DATA` and `is_live: false`;
+- company names read "TEST DATA — … Sample Company (not a real company)";
+- headlines start with "[TEST DATA]".
+
+E.V. is instructed, and tested, to say this every time.
+
+Live options I looked at (prices and limits change, so check each provider's pricing page before choosing):
+
+| Source | Free tier (as published) | Paid entry point | Credential E.V. would need |
+|---|---|---|---|
+| Alpha Vantage | 25 requests/day | $49.99/mo for 75 requests/min | `ALPHA_VANTAGE_API_KEY` |
+| Massive (formerly Polygon.io) | 5 calls/min, end-of-day data, 2 years of history | $29/mo Stocks Starter: 15-min delayed, unlimited calls | `MASSIVE_API_KEY` |
+| Tiingo | 50 requests/hour, 1,000/day, 500 symbols/month, end-of-day + 5 yrs fundamentals | $30/mo Power (personal use) | `TIINGO_API_TOKEN` |
+| Finnhub | Couldn't load their pricing page; check finnhub.io | — | `FINNHUB_API_KEY` |
+
+Adding one means writing one `MarketSource` class in `backend/integrations/market_data.py` and adding its key name to `SECRET_NAMES`.
+
+### AI providers: what actually works
+E.V. has two adapters: **OpenAI-compatible** and **Anthropic**. Any service that speaks one of these formats can be added as a preset with no new code.
+
+| Provider | Adapter | Verification |
+|---|---|---|
+| OpenAI, Groq, Google Gemini, OpenRouter, Ollama | OpenAI-compatible | Adapter tested with simulated responses (unchanged from before) |
+| Anthropic (Claude) | Anthropic SDK | Adapter tested with simulated responses |
+| xAI (Grok), Together AI, Fireworks AI, Cerebras, LM Studio | OpenAI-compatible | Base URL taken from each provider's docs; **no request sent by E.V.'s tests** |
+| Any other OpenAI-compatible service | OpenAI-compatible (enter base URL) | Not guaranteed: tool calling and streaming vary |
+| Azure OpenAI, Amazon Bedrock, Google Vertex AI | — | **Not supported**; each needs its own adapter (different auth/URL scheme) |
+
+None of these has been called for real from my build environment, because the network there is blocked. Use **Test & load models** on each connection to make the first live check.
+
+**Several keys, honestly used.** Each connection keeps its own key in `.env` (`CONNECTION_KEY_<ID>`). Keys are never written to the database, a prompt, a log, the audit log, or anything sent to the browser; the browser only ever sees `••••1234`. Fallback has two rules:
+- After a **rate limit**, E.V. will not switch to another key from the *same* provider, and she waits out that provider's Retry-After cooldown.
+- After an **outage or bad key**, she may try your next fallback.
+
+Extra keys are for separating usage, not for multiplying limits.
+
+---
+
 ## How it's built
 
 ```
@@ -147,7 +212,10 @@ FastAPI backend (backend/)
    ├── services/
    │     chat.py      conversation engine: stream → tool calls → approvals → cancel
    │     persona.py   E.V.'s instructions from your settings and memories
-   │     agents.py    focused modes and their tool lists
+   │     agents.py    agents + code-enforced policies (tools, max level, memory, limits)
+   │     delegation.py  E.V. → specialist hand-off, report parsing, provenance
+   │     connections.py / routing.py  named AI connections, per-agent models, fallback rules
+   │     prompts.py   loads your editable prompts/*.prompt.md files
    │     approvals.py / jobs.py / documents.py / files.py / data.py / briefing.py / insights.py
    ├── tools/
    │     registry.py  permission gate, validation, timeouts, audit log
@@ -176,7 +244,7 @@ Everything in `frontend/` is plain files: `index.html`, `css/ev.css`, and `js/*.
 python -m venv .venv
 .venv\Scripts\activate            # Windows  (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements-dev.txt
-python -m pytest                  # 56 tests, no network or real keys needed
+python -m pytest                  # 90 tests, no network or real keys needed
 python run.py                     # http://localhost:8000
 ```
 

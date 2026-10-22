@@ -98,7 +98,7 @@ export function renderDashboard(view) {
         h("span", { class: `tag tag-${n.tag === "setup" ? "warn" : n.tag}` }, FEED_TAG[n.tag] || "INFO"))));
 
     els.agents.replaceChildren(...d.agents.filter((a) => a.id !== "ev").map((a) => h("div", {
-      class: `agent-card ${a.status}`, title: a.detail, onclick: () => a.status === "not_implemented" ? toast(a.detail) : openChat({ agent: a.id }),
+      class: `agent-card ${a.status}`, title: a.detail, onclick: () => a.status === "not_implemented" ? toast(a.detail) : a.kind === "specialist" ? go("agents") : openChat({ agent: a.id }),
     }, h("span", { class: `ico ${a.status === "running" ? "" : "blue"}` }, icon(AGENT_ICON[a.icon] || "bot")),
       h("div", { class: "grow" }, h("div", { class: "t" }, a.name), h("div", { class: `s st-${a.status}` }, STATUS_LABEL[a.status] || a.status)),
       h("div", { class: `mini-wave st-${a.status}`, "aria-hidden": "true" }, Array.from({ length: 10 }, (_, i) => h("i", { style: { animationDelay: `${i * 0.08}s` } }))))));

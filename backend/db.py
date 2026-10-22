@@ -162,6 +162,35 @@ CREATE TABLE IF NOT EXISTS drafts (
 );
 """
 
+# Named AI connections (AI Core → Connections). The API key is NOT stored here: it
+# lives in .env under CONNECTION_KEY_<ID> (see config.py).
+CONNECTIONS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS connections (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    preset TEXT NOT NULL,
+    base_url TEXT,
+    default_model TEXT NOT NULL DEFAULT '',
+    models TEXT,
+    temperature REAL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive, idempotent upgrades for databases created by earlier versions."""
+    conn.executescript(CONNECTIONS_SCHEMA)
+    if "scope" not in _columns(conn, "memories"):
+        # 'shared' = E.V.'s general memories; an agent id (e.g. 'friday') = only that agent (and E.V.) can read it.
+        conn.execute("ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'shared'")
+
+
 FTS_SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     text, content='chunks', content_rowid='id', tokenize='porter unicode61'
@@ -203,6 +232,7 @@ def init() -> None:
     with tx() as conn:
         conn.execute("PRAGMA journal_mode = WAL")
         conn.executescript(SCHEMA)
+        _migrate(conn)
         try:
             conn.executescript(FTS_SCHEMA)
             FTS_AVAILABLE = True

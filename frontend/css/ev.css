@@ -454,3 +454,25 @@ label { font-size: 13px; color: var(--muted); display: grid; gap: 4px; }
 .chip.st-setup_required { color: var(--amber); border-color: rgba(255, 181, 71, 0.6); }
 .chip.st-error { color: #ff8c5a; border-color: #c0392b; }
 .chip.st-not_implemented { color: var(--dim); border-style: dashed; }
+
+/* ---------- delegation (E.V. → specialist) ---------- */
+.deleg, .report-card { align-self: flex-start; max-width: 92%; border: 1px solid rgba(56, 198, 255, 0.4); background: rgba(8, 20, 38, 0.92); border-radius: 9px; padding: 8px 12px; font-size: 13px; }
+.deleg-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.deleg-head svg { width: 15px; height: 15px; color: var(--cyan); }
+.deleg-state { color: var(--muted); font-size: 12px; }
+.deleg-task { color: var(--muted); margin: 4px 0 2px; font-size: 12.5px; }
+.deleg-steps { margin: 4px 0 0; padding-left: 18px; color: #cfe0ff; }
+.deleg-steps code { font-family: var(--mono); font-size: 12px; }
+.deleg .s, .report-card .s { color: var(--muted); font-size: 12px; }
+.report-card { border-color: rgba(255, 181, 71, 0.45); }
+.data-badge { font-size: 11.5px; font-weight: 700; padding: 1px 8px; border-radius: 10px; border: 1px solid; }
+.data-badge.warn { color: var(--amber); border-color: rgba(255, 181, 71, 0.7); background: rgba(255, 181, 71, 0.1); }
+.data-badge.ok { color: var(--cyan); border-color: rgba(56, 198, 255, 0.6); }
+.data-notice { margin: 6px 0; color: var(--amber); font-size: 12.5px; }
+.report-summary { margin: 4px 0; white-space: pre-wrap; }
+.conn-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.route-row { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(140px, 1fr) auto; gap: 8px; align-items: end; }
+@media (max-width: 640px) { .route-row { grid-template-columns: 1fr; } }
+.chip.st-temporary, .chip.st-missing, .chip.st-empty, .chip.st-too_long { color: var(--amber); border-color: rgba(255, 181, 71, 0.6); }
+.chip.st-starter { color: var(--cyan); border-color: rgba(56, 198, 255, 0.5); }
+.chip.st-custom { color: var(--red-soft); border-color: rgba(255, 45, 74, 0.6); }

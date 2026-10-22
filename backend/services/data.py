@@ -139,23 +139,45 @@ def today_timeline() -> list[dict[str, Any]]:
 
 
 # -- Memories ----------------------------------------------------------------
-def list_memories(query: str | None = None) -> list[dict[str, Any]]:
+def list_memories(query: str | None = None, visible_to: str | None = None) -> list[dict[str, Any]]:
+    """All memories, or only those agent `visible_to` may read (policy in agents.py)."""
     if query:
         like = f"%{query.strip()}%"
-        return db.rows("SELECT * FROM memories WHERE content LIKE ? OR category LIKE ? ORDER BY id DESC", (like, like))
-    return db.rows("SELECT * FROM memories ORDER BY category, id")
+        rows = db.rows("SELECT * FROM memories WHERE content LIKE ? OR category LIKE ? ORDER BY id DESC", (like, like))
+    else:
+        rows = db.rows("SELECT * FROM memories ORDER BY category, id")
+    if visible_to is None:
+        return rows
+    from . import agents  # local import: agents → integrations → services
+    return [m for m in rows if agents.can_read_memory(visible_to, m)]
 
 
-def add_memory(content: str, category: str = "general", source: str = "user") -> dict[str, Any]:
+def valid_scope(scope: str | None) -> str:
+    from . import agents
+    scope = (scope or "shared").strip().lower()
+    if scope == "shared" or scope in {a.id for a in agents.specialists()}:
+        return scope
+    raise ValueError("Scope must be 'shared' or a specialist id such as 'friday'.")
+
+
+def set_memory_scope(memory_id: int, scope: str) -> dict[str, Any]:
+    scope = valid_scope(scope)
+    if not db.execute("UPDATE memories SET scope = ?, updated_at = ? WHERE id = ?", (scope, db.now_iso(), memory_id)):
+        raise LookupError(f"Memory {memory_id} not found")
+    return db.row("SELECT * FROM memories WHERE id = ?", (memory_id,))  # type: ignore[return-value]
+
+
+def add_memory(content: str, category: str = "general", source: str = "user", scope: str = "shared") -> dict[str, Any]:
     content = content.strip()
     if not content:
         raise ValueError("Memory content is empty")
     if len(content) > 1000:
         raise ValueError("Keep each memory under 1000 characters")
+    scope = valid_scope(scope)
     now = db.now_iso()
     mid = db.execute(
-        "INSERT INTO memories(content, category, source, created_at, updated_at) VALUES(?,?,?,?,?)",
-        (content, (category or "general").strip().lower()[:40], source, now, now),
+        "INSERT INTO memories(content, category, source, scope, created_at, updated_at) VALUES(?,?,?,?,?,?)",
+        (content, (category or "general").strip().lower()[:40], source, scope, now, now),
     )
     return db.row("SELECT * FROM memories WHERE id = ?", (mid,))  # type: ignore[return-value]
 

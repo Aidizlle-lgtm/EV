@@ -102,11 +102,13 @@ def del_event(eid: int):
 class MemoryIn(BaseModel):
     content: str = Field(..., min_length=1, max_length=1000)
     category: str = Field("general", max_length=40)
+    scope: str = Field("shared", max_length=30)   # 'shared' or a specialist id (e.g. 'friday')
 
 
 class MemoryPatch(BaseModel):
     content: Optional[str] = Field(None, min_length=1, max_length=1000)
     category: Optional[str] = Field(None, max_length=40)
+    scope: Optional[str] = Field(None, max_length=30)
 
 
 class MemoryImport(BaseModel):
@@ -120,7 +122,7 @@ def get_memories(q: Optional[str] = None):
 
 @router.post("/memories")
 def post_memory(body: MemoryIn):
-    m = _guard(lambda: data.add_memory(body.content, body.category, source="user"))
+    m = _guard(lambda: data.add_memory(body.content, body.category, source="user", scope=body.scope))
     _audit("save_memory", "reversible_write", body.model_dump())
     return m
 
@@ -128,6 +130,8 @@ def post_memory(body: MemoryIn):
 @router.patch("/memories/{mid}")
 def patch_memory(mid: int, body: MemoryPatch):
     m = _guard(lambda: data.update_memory(mid, body.content, body.category))
+    if body.scope is not None:
+        m = _guard(lambda: data.set_memory_scope(mid, body.scope))
     _audit("update_memory", "reversible_write", {"memory_id": mid, **body.model_dump(exclude_unset=True)})
     return m
 
@@ -142,14 +146,14 @@ def del_memory(mid: int):
 @router.get("/memories/export")
 def export_memories():
     payload = {"exported_at": db.now_iso(), "app": "E.V.", "memories": [
-        {k: m[k] for k in ("id", "content", "category", "source", "created_at", "updated_at")} for m in data.list_memories()]}
+        {k: m.get(k) for k in ("id", "content", "category", "scope", "source", "created_at", "updated_at")} for m in data.list_memories()]}
     _audit("export_memories", "read", {"count": len(payload["memories"])})
     return JSONResponse(payload, headers={"Content-Disposition": 'attachment; filename="ev-memories.json"'})
 
 
 @router.post("/memories/import")
 def import_memories(body: MemoryImport):
-    added = [data.add_memory(m.content, m.category, source="user") for m in body.memories]
+    added = [_guard(lambda m=m: data.add_memory(m.content, m.category, source="user", scope=m.scope)) for m in body.memories]
     _audit("import_memories", "reversible_write", {"count": len(added)})
     return {"imported": len(added)}
 

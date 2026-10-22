@@ -14,12 +14,12 @@ from .. import db, providers
 from ..providers.base import ProviderError, ToolCall, TurnResult
 from ..tools import registry
 from ..tools.registry import TOOLS, Level, ToolContext, ToolError
-from . import agents, approvals, persona, settings
+from . import agents, approvals, connections, persona, routing, settings
+from .routing import FALLBACK_KINDS  # noqa: F401  (re-exported for older imports)
 
 log = logging.getLogger("ev.chat")
 MAX_HISTORY_MESSAGES = 80
 MAX_TOOL_RESULT_CHARS = 12000
-FALLBACK_KINDS = {"connection", "server", "rate_limit", "auth", "setup", "not_found"}
 
 
 @dataclass
@@ -29,6 +29,7 @@ class Run:
     agent: str
     cancel: asyncio.Event = field(default_factory=asyncio.Event)
     started: float = field(default_factory=time.time)
+    state: dict[str, Any] = field(default_factory=dict)   # per-reply counters shared with tools
 
 
 RUNS: dict[str, Run] = {}
@@ -43,7 +44,10 @@ def cancel(run_id: str) -> bool:
 
 
 def active_agents() -> set[str]:
-    return {r.agent for r in RUNS.values()}
+    out = {r.agent for r in RUNS.values()}
+    for r in RUNS.values():
+        out |= set(r.state.get("_active_specialists", ()))
+    return out
 
 
 # ------------------------------------------------------------------ storage
@@ -100,24 +104,29 @@ def history(conversation_id: int) -> list[dict[str, Any]]:
 
 
 # ------------------------------------------------------------------ helpers
-def _provider_chain() -> list[tuple[providers.Provider, str]]:
-    primary = settings.get("llm.provider") or "groq"
-    chain = [(providers.get(primary), settings.model_for(primary))]
-    fb = settings.get("llm.fallback_provider")
-    if fb and fb != primary and fb in providers.all_providers():
-        chain.append((providers.get(fb), settings.model_for(fb)))
-    return chain
+def _route_agent(agent: agents.Agent) -> str:
+    """Modes (Coding, Research…) are E.V. herself, so they use E.V.'s connection."""
+    return agent.id if agent.kind == "specialist" else "ev"
 
 
 def _tool_names(agent: agents.Agent, max_level: Level | None = None) -> list[str]:
-    names = agent.tools if agent.tools is not None else sorted(TOOLS)
+    """The tools an agent may see. Enforced in code from agents.py — prompts can't change it."""
+    if agent.tools is not None:
+        names = agent.tools
+    else:  # 'every tool' still excludes tools reserved for specialists
+        names = sorted(n for n, t in TOOLS.items() if "specialist_only" not in t.tags)
     disabled = registry.disabled_tools()
+    cap = agent.max_level if max_level is None else max_level
+    if agent.max_level is not None and max_level is not None and registry.LEVEL_RANK[agent.max_level] < registry.LEVEL_RANK[max_level]:
+        cap = agent.max_level
     out = []
     for n in names:
         t = TOOLS.get(n)
         if not t or n in disabled:
             continue
-        if max_level is not None and registry.LEVEL_RANK[t.level] > registry.LEVEL_RANK[max_level]:
+        if cap is not None and registry.LEVEL_RANK[t.level] > registry.LEVEL_RANK[cap]:
+            continue
+        if "orchestrator_only" in t.tags and agent.kind == "specialist":
             continue
         out.append(n)
     return out
@@ -131,11 +140,9 @@ def _tool_content(payload: dict[str, Any]) -> str:
 
 
 async def _one_turn(run_cancel: asyncio.Event | None, provider: providers.Provider, model: str, system: str,
-                    messages: list[dict[str, Any]], specs: list, on_text) -> TurnResult | None:
+                    messages: list[dict[str, Any]], specs: list, on_text, temperature: float | None = None) -> TurnResult | None:
     """Consume one streamed model call. Returns None if cancelled."""
-    temperature = settings.get("llm.temperature")
-    stream = provider.stream_turn(model=model, system=system, messages=messages, tools=specs,
-                                  temperature=float(temperature) if temperature is not None else None)
+    stream = provider.stream_turn(model=model, system=system, messages=messages, tools=specs, temperature=temperature)
     result: TurnResult | None = None
     try:
         async for ev in stream:
@@ -168,10 +175,16 @@ async def stream_chat(conversation_id: int, text: str, agent_id: str | None = No
         db.execute("UPDATE conversations SET title = ?, agent = ? WHERE id = ?", (title, agent.id, conversation_id))
     db.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (db.now_iso(), conversation_id))
 
+    try:
+        attempts = routing.Attempts(routing.chain_for(_route_agent(agent)))
+        route = attempts.first()
+        provider, model = route.provider(), route.model
+    except ProviderError as e:
+        _save(conversation_id, "assistant", e.message, status="error", meta={"error": e.as_dict()})
+        yield {"type": "error", **e.as_dict()}
+        return
     run = Run(id=uuid.uuid4().hex, conversation_id=conversation_id, agent=agent.id)
     RUNS[run.id] = run
-    chain = _provider_chain()
-    provider, model = chain[0]
     yield {"type": "run", "run_id": run.id, "conversation_id": conversation_id, "provider": provider.id,
            "provider_label": provider.label, "model": model, "agent": agent.id}
 
@@ -189,9 +202,9 @@ async def stream_chat(conversation_id: int, text: str, agent_id: str | None = No
         for step in range(max_steps):
             partial.clear()
             result: TurnResult | None = None
-            attempt_chain = list(chain) if step == 0 else [(provider, model)]
-            for idx, (prov, mdl) in enumerate(attempt_chain):
-                turn_task = asyncio.ensure_future(_one_turn(run.cancel, prov, mdl, system, history(conversation_id), specs, on_text))
+            while True:
+                turn_task = asyncio.ensure_future(_one_turn(run.cancel, provider, model, system, history(conversation_id), specs,
+                                                            on_text, connections.temperature(route.connection)))
                 try:
                     while not turn_task.done():
                         try:
@@ -203,14 +216,18 @@ async def stream_chat(conversation_id: int, text: str, agent_id: str | None = No
                     while not queue.empty():
                         yield queue.get_nowait()
                     result = turn_task.result() if not turn_task.cancelled() else None
-                    provider, model = prov, mdl
                     break
                 except ProviderError as e:
-                    can_fallback = idx + 1 < len(attempt_chain) and not partial and e.kind in FALLBACK_KINDS
-                    if not can_fallback:
+                    # Fallback only before anything was streamed, and only for the first model call of a reply.
+                    nxt = attempts.after_failure(route, e, streamed=bool(partial) or step > 0)
+                    if nxt is None:
                         raise
-                    nxt = attempt_chain[idx + 1][0]
-                    yield {"type": "notice", "message": f"{prov.label} unavailable ({e.message[:120]}). Using {nxt.label} for this reply."}
+                    try:
+                        nxt_provider = nxt.provider()
+                    except ProviderError:
+                        raise e from None
+                    yield {"type": "notice", "message": f"{provider.label} unavailable ({e.message[:120]}). Using {nxt_provider.label} for this reply."}
+                    route, provider, model = nxt, nxt_provider, nxt.model
                 finally:
                     if not turn_task.done():
                         turn_task.cancel()
@@ -236,7 +253,7 @@ async def stream_chat(conversation_id: int, text: str, agent_id: str | None = No
 
             pending = {c.id: c.name for c in calls}
             for call in calls:
-                async for ev in _handle_tool(run, call):
+                async for ev in _handle_tool(run, call, allowed=set(tool_names)):
                     yield ev
                 pending.pop(call.id, None)
                 if run.cancel.is_set():
@@ -270,13 +287,21 @@ async def stream_chat(conversation_id: int, text: str, agent_id: str | None = No
                       tool_call_id=cid, name=name)
 
 
-async def _handle_tool(run: Run, call: ToolCall) -> AsyncIterator[dict[str, Any]]:
-    ctx = ToolContext(actor="assistant", conversation_id=run.conversation_id)
+async def _handle_tool(run: Run, call: ToolCall, allowed: set[str] | None = None) -> AsyncIterator[dict[str, Any]]:
+    progress: asyncio.Queue = asyncio.Queue()
+    ctx = ToolContext(actor="assistant", conversation_id=run.conversation_id, agent="ev", depth=0,
+                      cancel=run.cancel, emit=progress.put_nowait, run_state=run.state)
     t = TOOLS.get(call.name)
     yield {"type": "tool_start", "id": call.id, "name": call.name, "args": call.arguments or {},
            "level": t.level.value if t else "unknown"}
     approval_id: str | None = None
     try:
+        if allowed is not None and call.name not in allowed:
+            # The model named a tool this agent wasn't given. Refuse in code, whatever the prompt said.
+            registry.audit(actor=ctx.actor, tool_name=call.name, level=t.level.value if t else "unknown",
+                           args=call.arguments, status="denied", detail="not in this agent's tool list",
+                           conversation_id=run.conversation_id)
+            raise ToolError("denied", f"'{call.name}' isn't available in this mode.")
         prepared = registry.prepare(call.name, call.arguments, ctx, parse_error=call.parse_error)
         if prepared.needs_approval:
             appr = approvals.create(prepared, ctx)
@@ -302,11 +327,37 @@ async def _handle_tool(run: Run, call: ToolCall) -> AsyncIterator[dict[str, Any]
                       tool_call_id=call.id, name=call.name)
                 yield {"type": "tool_result", "id": call.id, "name": call.name, "status": decision, "summary": message}
                 return
-        result = await registry.run(prepared, ctx, approval_id=approval_id)
+        # Run the tool while relaying its progress (e.g. a specialist's steps) and watching Stop.
+        task = asyncio.ensure_future(registry.run(prepared, ctx, approval_id=approval_id))
+        try:
+            while not task.done():
+                try:
+                    yield await asyncio.wait_for(progress.get(), timeout=0.25)
+                except asyncio.TimeoutError:
+                    if run.cancel.is_set():
+                        task.cancel()
+                        break
+            while not progress.empty():
+                yield progress.get_nowait()
+            if task.cancelled() or run.cancel.is_set() and not task.done():
+                raise asyncio.CancelledError
+            result = task.result()
+        except asyncio.CancelledError:
+            if not task.done():
+                task.cancel()
+            registry.audit(actor=ctx.actor, tool_name=call.name, level=prepared.tool.level.value,
+                           args=prepared.args.model_dump(mode="json"), status="cancelled",
+                           detail="stopped by the user", conversation_id=run.conversation_id)
+            msg = "Stopped by the user while running; any partial work was discarded."
+            _save(run.conversation_id, "tool", _tool_content({"status": "cancelled", "message": msg}),
+                  tool_call_id=call.id, name=call.name)
+            yield {"type": "tool_result", "id": call.id, "name": call.name, "status": "cancelled", "summary": msg}
+            return
         if approval_id:
             approvals.finish(approval_id, "executed", result)
         _save(run.conversation_id, "tool", _tool_content({"status": "ok", "result": result}), tool_call_id=call.id, name=call.name)
-        yield {"type": "tool_result", "id": call.id, "name": call.name, "status": "ok", "summary": _short(result)}
+        yield {"type": "tool_result", "id": call.id, "name": call.name, "status": "ok", "summary": _short(result),
+               **({"report": _report_card(result)} if isinstance(result, dict) and result.get("kind") == "specialist_report" else {})}
     except ToolError as e:
         if approval_id:
             approvals.finish(approval_id, "failed", e.message)
@@ -314,7 +365,19 @@ async def _handle_tool(run: Run, call: ToolCall) -> AsyncIterator[dict[str, Any]
         yield {"type": "tool_result", "id": call.id, "name": call.name, "status": e.status, "summary": e.message}
 
 
+def _report_card(result: dict[str, Any]) -> dict[str, Any]:
+    """The small piece of a specialist report the interface shows on the tool card."""
+    rep = result.get("report") or {}
+    return {"agent": result.get("agent"), "agent_name": result.get("agent_name"), "status": result.get("status"),
+            "data_status": result.get("data_status"), "data_notice": result.get("data_notice"),
+            "summary": str(rep.get("summary", ""))[:600], "confidence": rep.get("confidence"),
+            "sources": [{"source": p.get("source"), "as_of": p.get("as_of"), "is_live": p.get("is_live")}
+                        for p in (result.get("provenance") or [])][:8]}
+
+
 def _short(result: Any) -> str:
+    if isinstance(result, dict) and result.get("kind") == "specialist_report":
+        return f"{result.get('agent_name')} report · {result.get('status')} · data: {result.get('data_status')}"[:160]
     if isinstance(result, dict):
         for key in ("created", "updated", "deleted", "saved", "draft", "workflow"):
             v = result.get(key)
@@ -335,46 +398,91 @@ def _short(result: Any) -> str:
     return str(result)[:160]
 
 
-# ------------------------------------------------------------------ background (no approvals possible)
+# ------------------------------------------------------------------ non-interactive loops
+@dataclass
+class LoopResult:
+    text: str
+    status: str                      # completed | step_limit | cancelled
+    steps: int
+    tool_trace: list[dict[str, Any]]
+    connection: str
+    model: str
+
+
+async def run_loop(*, agent_route: str, system: str, messages: list[dict[str, Any]], tool_names: list[str],
+                   ctx: ToolContext, max_steps: int, on_event=None) -> LoopResult:
+    """A tool-using model loop with no approvals possible (background jobs, specialists).
+
+    Any tool that would need the user's approval is refused. Cancellation is checked
+    between and during model calls and between tool calls."""
+    specs = [TOOLS[n].spec() for n in tool_names]
+    attempts = routing.Attempts(routing.chain_for(agent_route))
+    route = attempts.first()
+    provider = route.provider()
+    trace: list[dict[str, Any]] = []
+    texts: list[str] = []
+
+    async def collect(chunk: str) -> None:
+        texts.append(chunk)
+
+    for step in range(max_steps):
+        if ctx.cancel is not None and ctx.cancel.is_set():
+            return LoopResult("", "cancelled", step, trace, route.connection, route.model)
+        while True:
+            texts.clear()
+            try:
+                result = await _one_turn(ctx.cancel, provider, route.model, system, messages, specs, collect,
+                                         connections.temperature(route.connection))
+                break
+            except ProviderError as e:
+                nxt = attempts.after_failure(route, e, streamed=False)  # nothing reaches the user mid-loop
+                if nxt is None:
+                    raise
+                if on_event:
+                    on_event({"type": "fallback", "from": provider.label, "reason": e.message[:120]})
+                route, provider = nxt, nxt.provider()
+        if result is None:
+            return LoopResult("", "cancelled", step, trace, route.connection, route.model)
+        messages.append({"role": "assistant", "content": result.text, "tool_calls": [c.as_dict() for c in result.tool_calls],
+                         "raw": result.raw, "provider": provider.id, "model": result.model or route.model})
+        if not result.tool_calls:
+            return LoopResult(result.text.strip(), "completed", step + 1, trace, route.connection, route.model)
+        for call in result.tool_calls:
+            if ctx.cancel is not None and ctx.cancel.is_set():
+                return LoopResult("", "cancelled", step + 1, trace, route.connection, route.model)
+            if on_event:
+                on_event({"type": "tool", "name": call.name, "args": call.arguments or {}})
+            entry: dict[str, Any] = {"tool": call.name, "args": call.arguments or {}}
+            try:
+                if call.name not in tool_names:  # the model named a tool it was never given
+                    raise ToolError("denied", f"'{call.name}' isn't available to this agent.")
+                prepared = registry.prepare(call.name, call.arguments, ctx, parse_error=call.parse_error)
+                if prepared.needs_approval:
+                    raise ToolError("denied", "Needs the user's approval, which isn't possible here. Propose it instead.")
+                res = await registry.run(prepared, ctx)
+                payload = {"status": "ok", "result": res}
+                entry.update(status="ok", result=res)
+            except ToolError as e:
+                payload = {"status": e.status, "error": e.message}
+                entry.update(status=e.status, error=e.message)
+            trace.append(entry)
+            if on_event:
+                on_event({"type": "tool_done", "name": call.name, "status": entry["status"]})
+            messages.append({"role": "tool", "tool_call_id": call.id, "name": call.name, "content": _tool_content(payload)})
+    return LoopResult("", "step_limit", max_steps, trace, route.connection, route.model)
+
+
 async def run_headless(prompt: str, *, label: str = "", use_tools: bool = True) -> str:
     agent = agents.get("ev")
-    names = [n for n in _tool_names(agent, max_level=Level.PREPARE) if not registry.needs_approval(TOOLS[n])] if use_tools else []
-    specs = [TOOLS[n].spec() for n in names]
+    names = [n for n in _tool_names(agent, max_level=Level.PREPARE) if not registry.needs_approval(TOOLS[n])
+             and "orchestrator_only" not in TOOLS[n].tags] if use_tools else []
     system = persona.system_prompt("ev", names) + (
         "\n\n## Background run\nYou are running as a scheduled workflow"
         + (f" named “{label}”" if label else "") + ". Nobody is available to approve actions, so only read and prepare. "
         "Write the result as a short, self-contained note.")
     messages: list[dict[str, Any]] = [{"role": "user", "content": f"{persona.turn_context('ev')}\n\n{prompt}"}]
     ctx = ToolContext(actor="job", max_level=Level.PREPARE)
-    chain = _provider_chain()
-    texts: list[str] = []
-
-    async def collect(chunk: str) -> None:
-        texts.append(chunk)
-
-    last_error: ProviderError | None = None
-    for prov, mdl in chain:
-        try:
-            for _ in range(5):
-                texts.clear()
-                result = await _one_turn(None, prov, mdl, system, messages, specs, collect)
-                assert result is not None
-                messages.append({"role": "assistant", "content": result.text, "tool_calls": [c.as_dict() for c in result.tool_calls],
-                                 "raw": result.raw, "provider": prov.id, "model": result.model or mdl})
-                if not result.tool_calls:
-                    return result.text.strip() or "(no output)"
-                for call in result.tool_calls:
-                    try:
-                        prepared = registry.prepare(call.name, call.arguments, ctx, parse_error=call.parse_error)
-                        if prepared.needs_approval:
-                            raise ToolError("denied", "Needs approval, which isn't possible in a background run.")
-                        payload = {"status": "ok", "result": await registry.run(prepared, ctx)}
-                    except ToolError as e:
-                        payload = {"status": e.status, "error": e.message}
-                    messages.append({"role": "tool", "tool_call_id": call.id, "name": call.name, "content": _tool_content(payload)})
-            return "Stopped after 5 steps without a final answer."
-        except ProviderError as e:
-            last_error = e
-            if e.kind not in FALLBACK_KINDS:
-                break
-    raise last_error or ProviderError("setup", "No AI provider is configured.")
+    out = await run_loop(agent_route="ev", system=system, messages=messages, tool_names=names, ctx=ctx, max_steps=5)
+    if out.status == "step_limit":
+        return "Stopped after 5 steps without a final answer."
+    return out.text or "(no output)"

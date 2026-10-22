@@ -48,13 +48,23 @@ SECRET_NAMES = {
 }
 
 
+# API keys for named AI connections (AI Core → Connections). Each connection keeps
+# its own key under CONNECTION_KEY_<ID>, so several keys for the same provider can
+# coexist. Never prefixed with EV_, so they are never copied into os.environ.
+CONNECTION_KEY_RE = re.compile(r"^CONNECTION_KEY_[A-Z0-9_]{1,48}$")
+
+
+def is_known_secret(name: str) -> bool:
+    return name in SECRET_NAMES or bool(CONNECTION_KEY_RE.match(name))
+
+
 def ensure_dirs() -> None:
     for d in (DATA_DIR, UPLOAD_DIR, BACKUP_DIR, EXPORT_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 
 _SECRETS: dict[str, str] = {
-    k: v for k, v in dotenv_values(ENV_FILE).items() if k in SECRET_NAMES and v
+    k: v for k, v in dotenv_values(ENV_FILE).items() if is_known_secret(k) and v
 } if ENV_FILE.exists() else {}
 
 
@@ -75,7 +85,7 @@ _SECRET_VALUE_RE = re.compile(r"^[\x21-\x7e]{1,512}$")  # printable ASCII, no sp
 
 
 def set_secret(name: str, value: str | None) -> None:
-    if name not in SECRET_NAMES:
+    if not is_known_secret(name):
         raise ValueError(f"Unknown secret name: {name}")
     if value is None or value.strip() == "":
         _SECRETS.pop(name, None)

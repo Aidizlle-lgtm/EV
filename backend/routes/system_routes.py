@@ -11,9 +11,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import config, db, providers
-from ..integrations import email_smtp, firetv, github, system_monitor, voice, weather
+from ..integrations import email_smtp, firetv, github, market_data, system_monitor, voice, weather
+from ..providers import presets
 from ..providers.base import ProviderError
-from ..services import agents, briefing, chat, data, files, settings, status
+from ..services import agents, briefing, chat, connections, data, files, prompts, routing, settings, status
 from ..tools import registry
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -96,6 +97,130 @@ def configure_provider(pid: str, body: ProviderSelect):
     if body.fallback is not None:
         settings.put("llm.fallback_provider", pid if body.fallback and settings.get("llm.provider") != pid else "")
     return provider_status(pid)
+
+
+# ------------------------------------------------------------- named AI connections
+@router.get("/connections")
+def list_connections():
+    return {"connections": connections.list_all(), "presets": [p.public() for p in presets.all_presets()]}
+
+
+class ConnectionIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=60)
+    preset: str = Field(..., max_length=40)
+    base_url: str | None = Field(None, max_length=300)
+    api_key: str | None = Field(None, max_length=512)
+    default_model: str = Field("", max_length=200)
+    temperature: float | None = Field(None, ge=0, le=2)
+
+
+class ConnectionPatch(BaseModel):
+    name: str | None = Field(None, min_length=1, max_length=60)
+    base_url: str | None = Field(None, max_length=300)
+    api_key: str | None = Field(None, max_length=512)   # "" removes the key
+    default_model: str | None = Field(None, max_length=200)
+    temperature: float | None = Field(None, ge=0, le=2)
+    clear_temperature: bool = False
+
+
+def _conn_guard(fn):
+    try:
+        return fn()
+    except LookupError as e:
+        raise HTTPException(404, str(e).strip("'\"")) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.post("/connections")
+def create_connection(body: ConnectionIn):
+    c = _conn_guard(lambda: connections.create(name=body.name, preset=body.preset, base_url=body.base_url,
+                                               api_key=(body.api_key or "").strip() or None,
+                                               default_model=body.default_model, temperature=body.temperature))
+    registry.audit(actor="user", tool_name="create_connection", level="reversible_write",
+                   args={"id": c["id"], "preset": body.preset, "base_url": c["base_url"], "key_saved": bool(body.api_key)}, status="ok")
+    return c
+
+
+@router.patch("/connections/{cid}")
+def update_connection(cid: str, body: ConnectionPatch):
+    c = _conn_guard(lambda: connections.update(cid, name=body.name, base_url=body.base_url, default_model=body.default_model,
+                                               temperature=body.temperature, clear_temperature=body.clear_temperature,
+                                               api_key=None if body.api_key is None else body.api_key.strip()))
+    changed = [k for k, v in body.model_dump(exclude_unset=True).items() if k != "api_key"]
+    registry.audit(actor="user", tool_name="update_connection", level="reversible_write",
+                   args={"id": cid, "changed": changed, "key_changed": body.api_key is not None}, status="ok")
+    return c
+
+
+@router.delete("/connections/{cid}")
+def delete_connection(cid: str):
+    _conn_guard(lambda: connections.delete(cid))
+    registry.audit(actor="user", tool_name="delete_connection", level="external", args={"id": cid}, status="ok")
+    return {"ok": True}
+
+
+@router.post("/connections/{cid}/test")
+async def test_connection(cid: str):
+    if not connections.exists(cid):
+        raise HTTPException(404, f"Connection '{cid}' not found.")
+    if connections.get(cid) is None:          # built-in: same as the provider card's Test button
+        return {"connection": connections.public(cid), "result": await test_provider(cid)}
+    try:
+        models = await connections.provider_for(cid).list_models()
+    except ProviderError as e:
+        status.record(f"llm:{cid}", False, e.message)
+        return {"connection": connections.public(cid), "error": e.message}
+    connections.set_models(cid, models)
+    status.record(f"llm:{cid}", True, f"{len(models)} models available")
+    return {"connection": connections.public(cid), "detail": f"{len(models)} models available"}
+
+
+# ------------------------------------------------------------- per-agent routing
+class FallbackIn(BaseModel):
+    connection: str = Field(..., max_length=60)
+    model: str = Field("", max_length=200)
+
+
+class RoutingIn(BaseModel):
+    connection: str = Field("", max_length=60)      # "" = inherit (E.V.: the active provider in AI Core)
+    model: str = Field("", max_length=200)
+    fallbacks: list[FallbackIn] = Field(default_factory=list, max_length=4)
+
+
+def _routable(aid: str) -> agents.Agent:
+    a = agents.AGENTS.get(aid)
+    if a is None or not a.implemented or a.kind == "mode":
+        raise HTTPException(404, "Only E.V. and specialists have their own model assignment (modes use E.V.'s).")
+    return a
+
+
+@router.get("/agents/{aid}/routing")
+def get_routing(aid: str):
+    _routable(aid)
+    return routing.describe(aid)
+
+
+@router.put("/agents/{aid}/routing")
+def put_routing(aid: str, body: RoutingIn):
+    _routable(aid)
+    for cid in [body.connection] + [f.connection for f in body.fallbacks]:
+        if cid and not connections.exists(cid):
+            raise HTTPException(400, f"Unknown connection '{cid}'.")
+    if not body.connection and body.fallbacks:
+        raise HTTPException(400, "Choose a main connection before adding fallbacks.")
+    settings.put(f"agents.{aid}.connection", body.connection)
+    settings.put(f"agents.{aid}.model", body.model.strip())
+    settings.put(f"agents.{aid}.fallbacks", [f.model_dump() for f in body.fallbacks])
+    registry.audit(actor="user", tool_name="set_agent_routing", level="reversible_write",
+                   args={"agent": aid, **body.model_dump()}, status="ok")
+    return routing.describe(aid)
+
+
+# ------------------------------------------------------------- market data (separate from AI connections)
+@router.get("/market-data")
+def get_market_data():
+    return market_data.status()
 
 
 # ------------------------------------------------------------- settings & secrets
@@ -280,8 +405,22 @@ def get_agents():
     for a in agents.AGENTS.values():
         r = agents.readiness(a)
         if a.id in running:
-            r = {"status": "running", "detail": "Replying now"}
-        out.append({"id": a.id, "name": a.name, "tagline": a.tagline, "icon": a.icon, "tools": a.tools, **r})
+            r = {"status": "running", "detail": "Working now"}
+        item: dict[str, Any] = {"id": a.id, "name": a.name, "tagline": a.tagline, "icon": a.icon, "tools": a.tools,
+                                "kind": a.kind, **r}
+        if a.prompt_file:
+            item["prompt"] = prompts.load(a.prompt_file).public()
+        if a.kind in ("orchestrator", "specialist") and a.implemented:
+            item["routing"] = routing.describe(a.id)
+        if a.kind == "specialist":
+            item["policy"] = {
+                "max_level": (a.max_level.value if a.max_level else None), "max_steps": a.max_steps, "timeout_s": a.timeout_s,
+                "can_delegate": False, "domain": a.domain,
+                "memory": ("own notes + shared categories: " + ", ".join(sorted(a.memory.shared_categories or [])))
+                          if not a.memory.all_scopes else "all memories"}
+            if any(t.startswith("market_") for t in (a.tools or [])):
+                item["market_data"] = market_data.status()
+        out.append(item)
     return out
 
 
